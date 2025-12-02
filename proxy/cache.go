@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"log/slog"
 	"math"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/AdguardTeam/dnsproxy/upstream"
 	glcache "github.com/AdguardTeam/golibs/cache"
+	"github.com/AdguardTeam/golibs/logutil/slogutil"
 	"github.com/AdguardTeam/golibs/mathutil"
 	"github.com/miekg/dns"
 )
@@ -46,6 +48,39 @@ type cache struct {
 	// optimisticMaxAge is the maximum time entries remain in the cache when
 	// cache is optimistic.
 	optimisticMaxAge time.Duration
+
+	// proactiveRefreshTime is the time before TTL expiration when entries
+	// should be proactively refreshed.
+	proactiveRefreshTime time.Duration
+
+	// cooldownPeriod is the time window to track request frequency.
+	cooldownPeriod time.Duration
+
+	// cooldownThreshold is the minimum number of requests for proactive refresh.
+	cooldownThreshold int
+
+	// refreshTimers stores timers for proactive cache refresh.
+	refreshTimers *sync.Map
+
+	// requestStats tracks request counts for cooldown mechanism.
+	requestStats *sync.Map
+
+	// stopRefresh is used to signal the refresh goroutine to stop.
+	stopRefresh chan struct{}
+
+	// cr is the caching resolver used for proactive refresh.
+	cr cachingResolver
+
+	// logger is used for logging refresh operations.
+	logger *slog.Logger
+}
+
+// requestStat tracks request statistics for a cache key.
+type requestStat struct {
+	// timestamps stores the request timestamps within the cooldown period.
+	timestamps []time.Time
+	// mu protects timestamps.
+	mu sync.Mutex
 }
 
 // cacheItem is a single cache entry.  It's a helper type to aggregate the
@@ -172,15 +207,55 @@ func (p *Proxy) initCache() {
 	}
 
 	size := p.CacheSizeBytes
-	p.logger.Info("cache enabled", "size", size)
+	
+	// Convert milliseconds to duration, default 30 seconds.
+	proactiveRefreshTimeMs := p.CacheProactiveRefreshTime
+	if proactiveRefreshTimeMs == 0 {
+		proactiveRefreshTimeMs = 30000
+	}
+	proactiveRefreshTime := time.Duration(proactiveRefreshTimeMs) * time.Millisecond
+
+	// Convert cooldown period from seconds, default 30 minutes.
+	cooldownPeriodSec := p.CacheProactiveCooldownPeriod
+	if cooldownPeriodSec == 0 {
+		cooldownPeriodSec = 1800
+	}
+	cooldownPeriod := time.Duration(cooldownPeriodSec) * time.Second
+
+	// Set cooldown threshold.
+	// If not set (0), use default 3.
+	// If set to negative, disable cooldown (treat as 0).
+	cooldownThreshold := p.CacheProactiveCooldownThreshold
+	if cooldownThreshold == 0 {
+		cooldownThreshold = 3
+	} else if cooldownThreshold < 0 {
+		cooldownThreshold = 0
+	}
+
+	p.logger.Info("cache enabled",
+		"size", size,
+		"proactive_refresh_ms", proactiveRefreshTimeMs,
+		"cooldown_period_sec", cooldownPeriodSec,
+		"cooldown_threshold", cooldownThreshold,
+	)
+
 	p.cache = newCache(&cacheConfig{
-		size:             size,
-		optimisticTTL:    p.CacheOptimisticAnswerTTL,
-		optimisticMaxAge: p.CacheOptimisticMaxAge,
-		withECS:          p.EnableEDNSClientSubnet,
-		optimistic:       p.CacheOptimistic,
+		size:                 size,
+		optimisticTTL:        p.CacheOptimisticAnswerTTL,
+		optimisticMaxAge:     p.CacheOptimisticMaxAge,
+		proactiveRefreshTime: proactiveRefreshTime,
+		cooldownPeriod:       cooldownPeriod,
+		cooldownThreshold:    cooldownThreshold,
+		withECS:              p.EnableEDNSClientSubnet,
+		optimistic:           p.CacheOptimistic,
 	})
 	p.shortFlighter = newOptimisticResolver(p)
+
+	// Set up proactive refresh if optimistic cache is enabled.
+	if p.CacheOptimistic && proactiveRefreshTime > 0 {
+		p.cache.cr = p
+		p.cache.logger = p.logger
+	}
 }
 
 // cacheConfig is the configuration structure for [cache].
@@ -196,6 +271,16 @@ type cacheConfig struct {
 	// cache is optimistic.
 	optimisticMaxAge time.Duration
 
+	// proactiveRefreshTime is the time before TTL expiration when entries
+	// should be proactively refreshed.
+	proactiveRefreshTime time.Duration
+
+	// cooldownPeriod is the time window to track request frequency.
+	cooldownPeriod time.Duration
+
+	// cooldownThreshold is the minimum number of requests for proactive refresh.
+	cooldownThreshold int
+
 	// withECS enables EDNS Client Subnet support for cache.
 	withECS bool
 
@@ -207,12 +292,18 @@ type cacheConfig struct {
 // newCache returns a properly initialized cache.  logger must not be nil.
 func newCache(conf *cacheConfig) (c *cache) {
 	c = &cache{
-		itemsLock:           &sync.RWMutex{},
-		itemsWithSubnetLock: &sync.RWMutex{},
-		items:               createCache(conf.size),
-		optimistic:          conf.optimistic,
-		optimisticTTL:       conf.optimisticTTL,
-		optimisticMaxAge:    conf.optimisticMaxAge,
+		itemsLock:            &sync.RWMutex{},
+		itemsWithSubnetLock:  &sync.RWMutex{},
+		items:                createCache(conf.size),
+		optimistic:           conf.optimistic,
+		optimisticTTL:        conf.optimisticTTL,
+		optimisticMaxAge:     conf.optimisticMaxAge,
+		proactiveRefreshTime: conf.proactiveRefreshTime,
+		cooldownPeriod:       conf.cooldownPeriod,
+		cooldownThreshold:    conf.cooldownThreshold,
+		refreshTimers:        &sync.Map{},
+		requestStats:         &sync.Map{},
+		stopRefresh:          make(chan struct{}),
 	}
 
 	if conf.withECS {
@@ -241,6 +332,15 @@ func (c *cache) get(req *dns.Msg) (ci *cacheItem, expired bool, key []byte) {
 
 	if ci, expired = c.unpackItem(data, req); ci == nil {
 		c.items.Del(key)
+	} else {
+		// Record request for cooldown mechanism.
+		justReachedThreshold := c.recordRequest(key)
+
+		// If we just reached the threshold and haven't scheduled refresh yet,
+		// try to schedule it now (for dynamic threshold activation).
+		if justReachedThreshold && c.optimistic && c.proactiveRefreshTime > 0 && c.cr != nil {
+			c.tryScheduleRefresh(key, req)
+		}
 	}
 
 	return ci, expired, key
@@ -301,6 +401,15 @@ func (c *cache) getWithSubnet(req *dns.Msg, n *net.IPNet) (ci *cacheItem, expire
 
 	if ci, expired = c.unpackItem(data, req); ci == nil {
 		c.itemsWithSubnet.Del(k)
+	} else {
+		// Record request for cooldown mechanism.
+		justReachedThreshold := c.recordRequest(k)
+
+		// If we just reached the threshold and haven't scheduled refresh yet,
+		// try to schedule it now (for dynamic threshold activation).
+		if justReachedThreshold && c.optimistic && c.proactiveRefreshTime > 0 && c.cr != nil {
+			c.tryScheduleRefresh(k, req)
+		}
 	}
 
 	return ci, expired, k
@@ -340,6 +449,22 @@ func (c *cache) set(m *dns.Msg, u upstream.Upstream, l *slog.Logger) {
 	defer c.itemsLock.Unlock()
 
 	c.items.Set(key, packed)
+
+	// Record this as a request for cooldown mechanism.
+	justReachedThreshold := c.recordRequest(key)
+
+	// Schedule proactive refresh if enabled.
+	if c.optimistic && item.ttl > 0 && c.proactiveRefreshTime > 0 && c.cr != nil {
+		// First try normal scheduling (checks cooldown)
+		c.scheduleRefresh(key, item.ttl, m)
+		
+		// If we just reached threshold but scheduling was skipped earlier,
+		// the scheduleRefresh above will now succeed because shouldProactiveRefresh
+		// will return true. No need for additional logic here.
+	} else if justReachedThreshold && c.optimistic && c.proactiveRefreshTime > 0 && c.cr != nil {
+		// Edge case: if we just reached threshold but TTL is 0,
+		// we still won't schedule (which is correct behavior)
+	}
 }
 
 // setWithSubnet stores response and upstream with subnet in the cache.  The
@@ -359,6 +484,14 @@ func (c *cache) setWithSubnet(m *dns.Msg, u upstream.Upstream, subnet *net.IPNet
 	defer c.itemsWithSubnetLock.Unlock()
 
 	c.itemsWithSubnet.Set(key, packed)
+
+	// Record this as a request for cooldown mechanism.
+	c.recordRequest(key)
+
+	// Schedule proactive refresh if enabled.
+	if c.optimistic && item.ttl > 0 && c.proactiveRefreshTime > 0 && c.cr != nil {
+		c.scheduleRefresh(key, item.ttl, m)
+	}
 }
 
 // clearItems empties the simple cache.
@@ -367,6 +500,7 @@ func (c *cache) clearItems() {
 	defer c.itemsLock.Unlock()
 
 	c.items.Clear()
+	c.cancelAllTimers()
 }
 
 // clearItemsWithSubnet empties the subnet cache, if any.
@@ -652,4 +786,258 @@ func filterMsg(dst, m *dns.Msg, ad, do bool, ttl uint32) {
 	dst.Answer = filterRRSlice(m.Answer, do, ttl, m.Question[0].Qtype)
 	dst.Ns = filterRRSlice(m.Ns, do, ttl, dns.TypeNone)
 	dst.Extra = filterRRSlice(m.Extra, do, ttl, dns.TypeNone)
+}
+
+// recordRequest records a cache hit for cooldown mechanism.
+// Returns true if the request count just reached the threshold.
+func (c *cache) recordRequest(key []byte) (justReachedThreshold bool) {
+	if c.cooldownThreshold <= 0 {
+		return false
+	}
+
+	keyStr := string(key)
+	now := time.Now()
+
+	// Get or create request stat.
+	val, _ := c.requestStats.LoadOrStore(keyStr, &requestStat{
+		timestamps: make([]time.Time, 0, c.cooldownThreshold),
+	})
+
+	stat := val.(*requestStat)
+	stat.mu.Lock()
+	defer stat.mu.Unlock()
+
+	// Count valid timestamps before adding new one.
+	cutoff := now.Add(-c.cooldownPeriod)
+	validCount := 0
+	for _, ts := range stat.timestamps {
+		if ts.After(cutoff) {
+			validCount++
+		}
+	}
+
+	wasUnderThreshold := validCount < c.cooldownThreshold
+
+	// Remove timestamps outside the cooldown period.
+	validTimestamps := make([]time.Time, 0, len(stat.timestamps))
+	for _, ts := range stat.timestamps {
+		if ts.After(cutoff) {
+			validTimestamps = append(validTimestamps, ts)
+		}
+	}
+
+	// Add current timestamp.
+	validTimestamps = append(validTimestamps, now)
+	stat.timestamps = validTimestamps
+
+	// Check if we just reached the threshold.
+	newValidCount := len(validTimestamps)
+	justReachedThreshold = wasUnderThreshold && newValidCount >= c.cooldownThreshold
+
+	return justReachedThreshold
+}
+
+// shouldProactiveRefresh checks if a cache entry should be proactively refreshed
+// based on the cooldown mechanism.
+func (c *cache) shouldProactiveRefresh(key []byte) bool {
+	if c.cooldownThreshold <= 0 {
+		// Cooldown disabled, always refresh.
+		return true
+	}
+
+	keyStr := string(key)
+	val, ok := c.requestStats.Load(keyStr)
+	if !ok {
+		// No request history, don't refresh.
+		return false
+	}
+
+	stat := val.(*requestStat)
+	stat.mu.Lock()
+	defer stat.mu.Unlock()
+
+	// Clean up old timestamps.
+	now := time.Now()
+	cutoff := now.Add(-c.cooldownPeriod)
+	validCount := 0
+	for _, ts := range stat.timestamps {
+		if ts.After(cutoff) {
+			validCount++
+		}
+	}
+
+	// Check if request count meets threshold.
+	return validCount >= c.cooldownThreshold
+}
+
+// refreshTimerEntry stores the timer and DNS message for a cache entry.
+type refreshTimerEntry struct {
+	timer *time.Timer
+	msg   *dns.Msg
+}
+
+// tryScheduleRefresh attempts to schedule a refresh for an existing cache entry
+// when the request threshold is dynamically reached. It retrieves the cached item
+// to get the TTL and then schedules the refresh.
+func (c *cache) tryScheduleRefresh(key []byte, req *dns.Msg) {
+	// Check if already scheduled.
+	keyStr := string(key)
+	if _, exists := c.refreshTimers.Load(keyStr); exists {
+		// Already scheduled, no need to reschedule.
+		return
+	}
+
+	// Get the cached item to extract TTL.
+	c.itemsLock.RLock()
+	data := c.items.Get(key)
+	c.itemsLock.RUnlock()
+
+	if data == nil {
+		return
+	}
+
+	// Extract expiration time from packed data.
+	if len(data) < expTimeSz {
+		return
+	}
+
+	expire := time.Unix(int64(binary.BigEndian.Uint32(data[:expTimeSz])), 0)
+	now := time.Now()
+	
+	// Calculate remaining TTL.
+	if now.After(expire) {
+		// Already expired, no point in scheduling.
+		return
+	}
+
+	remainingTTL := expire.Sub(now)
+	refreshDelay := remainingTTL - c.proactiveRefreshTime
+
+	if refreshDelay <= 0 {
+		// Too late to schedule, would refresh immediately or in the past.
+		return
+	}
+
+	// Create a copy of the message for later use.
+	msgCopy := req.Copy()
+
+	// Create timer that will trigger the refresh.
+	timer := time.AfterFunc(refreshDelay, func() {
+		c.executeRefresh(keyStr, msgCopy)
+	})
+
+	// Store the timer entry.
+	c.refreshTimers.Store(keyStr, &refreshTimerEntry{
+		timer: timer,
+		msg:   msgCopy,
+	})
+
+	if c.logger != nil && len(req.Question) > 0 {
+		c.logger.Debug("dynamically scheduled proactive refresh after reaching threshold",
+			"domain", req.Question[0].Name,
+			"delay", refreshDelay)
+	}
+}
+
+// scheduleRefresh schedules a proactive refresh for a cache entry.
+// key is the cache key, ttl is the TTL in seconds, m is the DNS message.
+func (c *cache) scheduleRefresh(key []byte, ttl uint32, m *dns.Msg) {
+	// Check cooldown mechanism first.
+	if !c.shouldProactiveRefresh(key) {
+		if c.logger != nil && len(m.Question) > 0 {
+			c.logger.Debug("skipping proactive refresh due to low request frequency",
+				"domain", m.Question[0].Name)
+		}
+		return
+	}
+
+	// Cancel existing timer if any.
+	keyStr := string(key)
+	if entry, ok := c.refreshTimers.Load(keyStr); ok {
+		if timerEntry, ok := entry.(*refreshTimerEntry); ok {
+			timerEntry.timer.Stop()
+		}
+	}
+
+	// Calculate when to refresh (TTL - proactiveRefreshTime).
+	ttlDuration := time.Duration(ttl) * time.Second
+	refreshDelay := ttlDuration - c.proactiveRefreshTime
+	if refreshDelay <= 0 {
+		// TTL is too short, don't schedule refresh.
+		return
+	}
+
+	// Create a copy of the message for later use.
+	msgCopy := m.Copy()
+
+	// Create timer that will trigger the refresh.
+	timer := time.AfterFunc(refreshDelay, func() {
+		c.executeRefresh(keyStr, msgCopy)
+	})
+
+	// Store the timer entry.
+	c.refreshTimers.Store(keyStr, &refreshTimerEntry{
+		timer: timer,
+		msg:   msgCopy,
+	})
+}
+
+// executeRefresh executes the proactive refresh for a cache entry.
+func (c *cache) executeRefresh(keyStr string, m *dns.Msg) {
+	// Remove the timer entry.
+	_, ok := c.refreshTimers.LoadAndDelete(keyStr)
+	if !ok {
+		return
+	}
+
+	go c.refreshEntry(m)
+}
+
+// refreshEntry attempts to refresh a single cache entry by resolving it again.
+func (c *cache) refreshEntry(m *dns.Msg) {
+	defer slogutil.RecoverAndLog(context.TODO(), c.logger)
+
+	if m == nil || len(m.Question) == 0 {
+		return
+	}
+
+	dctx := &DNSContext{
+		Req: m.Copy(),
+	}
+
+	ok, err := c.cr.replyFromUpstream(dctx)
+	if err != nil {
+		c.logger.Debug("proactive cache refresh failed", slogutil.KeyError, err)
+		return
+	}
+
+	if ok {
+		c.cr.cacheResp(dctx)
+		c.logger.Debug("proactively refreshed cache entry", "domain", m.Question[0].Name)
+	}
+}
+
+// stopProactiveRefresh stops all proactive refresh timers.
+func (c *cache) stopProactiveRefresh() {
+	c.cancelAllTimers()
+	if c.stopRefresh != nil {
+		close(c.stopRefresh)
+	}
+}
+
+// cancelAllTimers cancels all active refresh timers and clears request stats.
+func (c *cache) cancelAllTimers() {
+	c.refreshTimers.Range(func(key, value interface{}) bool {
+		if entry, ok := value.(*refreshTimerEntry); ok {
+			entry.timer.Stop()
+		}
+		c.refreshTimers.Delete(key)
+		return true
+	})
+
+	// Clear request statistics.
+	c.requestStats.Range(func(key, value interface{}) bool {
+		c.requestStats.Delete(key)
+		return true
+	})
 }

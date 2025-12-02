@@ -206,6 +206,20 @@ type Config struct {
 	// when cache is optimistic.  Default value is [DefaultOptimisticMaxAge].
 	CacheOptimisticMaxAge time.Duration
 
+	// CacheProactiveRefreshTime is the time in milliseconds before TTL expiration
+	// when cache entries should be proactively refreshed.  If zero or negative,
+	// proactive refresh is disabled.  Default is 30000 (30 seconds).
+	CacheProactiveRefreshTime int
+
+	// CacheProactiveCooldownPeriod is the time window in seconds to track
+	// request frequency for cooldown mechanism.  Default is 1800 (30 minutes).
+	CacheProactiveCooldownPeriod int
+
+	// CacheProactiveCooldownThreshold is the minimum number of requests within
+	// the cooldown period for a domain to be eligible for proactive refresh.
+	// Default is 3.
+	CacheProactiveCooldownThreshold int
+
 	// MaxGoroutines is the maximum number of goroutines processing DNS
 	// requests.  Important for mobile users.
 	//
