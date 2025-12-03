@@ -1,0 +1,162 @@
+diff --git a/proxy/cache.go b/proxy/cache.go
+index 1234567..abcdefg 100644
+--- a/proxy/cache.go
++++ b/proxy/cache.go
+@@ -28,6 +28,12 @@ package proxy
+ // TODO(a.garipov):  Add [timeutil.Clock] and make tests less flaky.
+ type cache struct {
+ 	// itemsLock protects requests cache.
+ 	itemsLock *sync.RWMutex
+ 
+ 	// itemsWithSubnetLock protects requests cache.
+ 	itemsWithSubnetLock *sync.RWMutex
+ 
+ 	// items is the requests cache.
+ 	items glcache.Cache
+ 
+ 	// itemsWithSubnet is the requests cache.
+ 	itemsWithSubnet glcache.Cache
+ 
+ 	// optimistic defines if the cache should return expired items and resolve
+ 	// those again.
+ 	optimistic bool
+ 
+ 	// optimisticTTL is the default TTL for expired cached responses.
+ 	optimisticTTL time.Duration
+ 
+ 	// optimisticMaxAge is the maximum time entries remain in the cache when
+ 	// cache is optimistic.
+ 	optimisticMaxAge time.Duration
+ 
+ 	// proactiveRefreshTime is the time before TTL expiration when entries
+ 	// should be proactively refreshed.
+ 	proactiveRefreshTime time.Duration
+ 
+ 	// cooldownPeriod is the time window to track request frequency.
+ 	cooldownPeriod time.Duration
+ 
+ 	// cooldownThreshold is the minimum number of requests for proactive refresh.
+ 	cooldownThreshold int
+ 
+ 	// refreshTimers stores timers for proactive cache refresh.
+ 	refreshTimers *sync.Map
+ 
+ 	// requestStats tracks request counts for cooldown mechanism.
+ 	requestStats *sync.Map
+ 
+ 	// stopRefresh is used to signal the refresh goroutine to stop.
+ 	stopRefresh chan struct{}
+ 
+ 	// cr is the caching resolver used for proactive refresh.
+ 	cr cachingResolver
+ 
+ 	// logger is used for logging refresh operations.
+ 	logger *slog.Logger
++
++	// cacheMinTTL is the minimum TTL for cached DNS responses in seconds.
++	cacheMinTTL uint32
++
++	// cacheMaxTTL is the maximum TTL for cached DNS responses in seconds.
++	cacheMaxTTL uint32
+ }
+ 
+ // requestStat tracks request statistics for a cache key.
+@@ -95,11 +101,14 @@ type cacheItem struct {
+ // respToItem converts the pair of the response and upstream resolved the one
+ // into item for storing it in cache.  l must not be nil.
+ func (c *cache) respToItem(m *dns.Msg, u upstream.Upstream, l *slog.Logger) (item *cacheItem) {
+ 	ttl := cacheTTL(m, l)
+ 	if ttl == 0 {
+ 		return nil
+ 	}
+ 
++	// Apply TTL overrides for cache storage.
++	ttl = respectTTLOverrides(ttl, c.cacheMinTTL, c.cacheMaxTTL)
++
+ 	upsAddr := ""
+ 	if u != nil {
+ 		upsAddr = u.Address()
+ 	}
+ 
+ 	return &cacheItem{
+ 		m:   m,
+ 		u:   upsAddr,
+ 		ttl: ttl,
+ 	}
+ }
+ 
+@@ -242,6 +251,8 @@ func (p *Proxy) initCache() {
+ 	p.cache = newCache(&cacheConfig{
+ 		size:                 size,
+ 		optimisticTTL:        p.CacheOptimisticAnswerTTL,
+ 		optimisticMaxAge:     p.CacheOptimisticMaxAge,
+ 		proactiveRefreshTime: proactiveRefreshTime,
+ 		cooldownPeriod:       cooldownPeriod,
+ 		cooldownThreshold:    cooldownThreshold,
+ 		withECS:              p.EnableEDNSClientSubnet,
+ 		optimistic:           p.CacheOptimistic,
++		cacheMinTTL:          p.CacheMinTTL,
++		cacheMaxTTL:          p.CacheMaxTTL,
+ 	})
+ 	p.shortFlighter = newOptimisticResolver(p)
+ 
+@@ -270,6 +281,12 @@ type cacheConfig struct {
+ 	// cooldownThreshold is the minimum number of requests for proactive refresh.
+ 	cooldownThreshold int
+ 
+ 	// withECS enables EDNS Client Subnet support for cache.
+ 	withECS bool
+ 
+ 	// optimistic defines if the cache should return expired items and resolve
+ 	// those again.
+ 	optimistic bool
++
++	// cacheMinTTL is the minimum TTL for cached DNS responses.
++	cacheMinTTL uint32
++
++	// cacheMaxTTL is the maximum TTL for cached DNS responses.
++	cacheMaxTTL uint32
+ }
+ 
+ // newCache returns a properly initialized cache.  logger must not be nil.
+ func newCache(conf *cacheConfig) (c *cache) {
+ 	c = &cache{
+ 		itemsLock:            &sync.RWMutex{},
+ 		itemsWithSubnetLock:  &sync.RWMutex{},
+ 		items:                createCache(conf.size),
+ 		optimistic:           conf.optimistic,
+ 		optimisticTTL:        conf.optimisticTTL,
+ 		optimisticMaxAge:     conf.optimisticMaxAge,
+ 		proactiveRefreshTime: conf.proactiveRefreshTime,
+ 		cooldownPeriod:       conf.cooldownPeriod,
+ 		cooldownThreshold:    conf.cooldownThreshold,
+ 		refreshTimers:        &sync.Map{},
+ 		requestStats:         &sync.Map{},
+ 		stopRefresh:          make(chan struct{}),
++		cacheMinTTL:          conf.cacheMinTTL,
++		cacheMaxTTL:          conf.cacheMaxTTL,
+ 	}
+ 
+ 	if conf.withECS {
+ 		c.itemsWithSubnet = createCache(conf.size)
+ 	}
+ 
+ 	return c
+ }
+ 
+diff --git a/proxy/dnscontext.go b/proxy/dnscontext.go
+index 1234567..abcdefg 100644
+--- a/proxy/dnscontext.go
++++ b/proxy/dnscontext.go
+@@ -233,6 +233,8 @@ func (p *Proxy) createCustomUpstreamConfig(
+ 	if cacheEnabled {
+ 		// TODO(d.kolyshev): Support optimistic with newOptimisticResolver.
+ 		customCache = newCache(&cacheConfig{
+ 			size:       cacheSize,
+ 			withECS:    enableEDNSClientSubnet,
+ 			optimistic: false,
++			cacheMinTTL: p.CacheMinTTL,
++			cacheMaxTTL: p.CacheMaxTTL,
+ 		})
+ 	}
+ 

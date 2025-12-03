@@ -231,6 +231,7 @@ func NewCustomUpstreamConfig(
 	var customCache *cache
 	if cacheEnabled {
 		// TODO(d.kolyshev): Support optimistic with newOptimisticResolver.
+		// TODO(d.kolyshev): Support CacheMinTTL/CacheMaxTTL for custom upstream cache.
 		customCache = newCache(&cacheConfig{
 			size:       cacheSize,
 			withECS:    enableEDNSClientSubnet,

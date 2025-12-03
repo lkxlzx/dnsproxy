@@ -73,6 +73,12 @@ type cache struct {
 
 	// logger is used for logging refresh operations.
 	logger *slog.Logger
+
+	// cacheMinTTL is the minimum TTL for cached DNS responses in seconds.
+	cacheMinTTL uint32
+
+	// cacheMaxTTL is the maximum TTL for cached DNS responses in seconds.
+	cacheMaxTTL uint32
 }
 
 // requestStat tracks request statistics for a cache key.
@@ -98,6 +104,9 @@ func (c *cache) respToItem(m *dns.Msg, u upstream.Upstream, l *slog.Logger) (ite
 	if ttl == 0 {
 		return nil
 	}
+
+	// Apply TTL overrides for cache storage.
+	ttl = respectTTLOverrides(ttl, c.cacheMinTTL, c.cacheMaxTTL)
 
 	upsAddr := ""
 	if u != nil {
@@ -248,6 +257,8 @@ func (p *Proxy) initCache() {
 		cooldownThreshold:    cooldownThreshold,
 		withECS:              p.EnableEDNSClientSubnet,
 		optimistic:           p.CacheOptimistic,
+		cacheMinTTL:          p.CacheMinTTL,
+		cacheMaxTTL:          p.CacheMaxTTL,
 	})
 	p.shortFlighter = newOptimisticResolver(p)
 
@@ -287,6 +298,12 @@ type cacheConfig struct {
 	// optimistic defines if the cache should return expired items and resolve
 	// those again.
 	optimistic bool
+
+	// cacheMinTTL is the minimum TTL for cached DNS responses.
+	cacheMinTTL uint32
+
+	// cacheMaxTTL is the maximum TTL for cached DNS responses.
+	cacheMaxTTL uint32
 }
 
 // newCache returns a properly initialized cache.  logger must not be nil.
@@ -304,6 +321,8 @@ func newCache(conf *cacheConfig) (c *cache) {
 		refreshTimers:        &sync.Map{},
 		requestStats:         &sync.Map{},
 		stopRefresh:          make(chan struct{}),
+		cacheMinTTL:          conf.cacheMinTTL,
+		cacheMaxTTL:          conf.cacheMaxTTL,
 	}
 
 	if conf.withECS {
