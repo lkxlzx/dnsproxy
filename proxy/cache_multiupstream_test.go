@@ -33,7 +33,7 @@ func TestProactiveRefresh_MultiUpstream(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	domain := "multi-upstream.example."
+	domain := "connectivity-check.ubuntu.com."
 
 	// Initial request
 	dctx := &DNSContext{
@@ -105,7 +105,7 @@ func TestProactiveRefresh_UpstreamFailover(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	domain := "failover.example."
+	domain := "connectivity-check.ubuntu.com."
 
 	// Initial request (should use good upstream after failing one fails)
 	dctx := &DNSContext{
