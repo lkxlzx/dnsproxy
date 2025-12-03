@@ -337,26 +337,31 @@ func newCache(conf *cacheConfig) (c *cache) {
 // avoid recalculating it afterwards.
 func (c *cache) get(req *dns.Msg) (ci *cacheItem, expired bool, key []byte) {
 	c.itemsLock.RLock()
-	defer c.itemsLock.RUnlock()
 
 	if !canLookUpInCache(c.items, req) {
+		c.itemsLock.RUnlock()
 		return nil, false, nil
 	}
 
 	key = msgToKey(req)
 	data := c.items.Get(key)
 	if data == nil {
+		c.itemsLock.RUnlock()
 		return nil, false, key
 	}
 
+	var justReachedThreshold bool
 	if ci, expired = c.unpackItem(data, req); ci == nil {
 		c.items.Del(key)
+		c.itemsLock.RUnlock()
 	} else {
 		// Record request for cooldown mechanism.
-		justReachedThreshold := c.recordRequest(key)
+		justReachedThreshold = c.recordRequest(key)
+		c.itemsLock.RUnlock()
 
 		// If we just reached the threshold and haven't scheduled refresh yet,
 		// try to schedule it now (for dynamic threshold activation).
+		// This is called after releasing the lock to avoid deadlock.
 		if justReachedThreshold && c.optimistic && c.proactiveRefreshTime > 0 && c.cr != nil {
 			c.tryScheduleRefresh(key, req)
 		}
@@ -373,9 +378,9 @@ func (c *cache) get(req *dns.Msg) (ci *cacheItem, expired bool, key []byte) {
 // are performed up to mask+1 times.
 func (c *cache) getWithSubnet(req *dns.Msg, n *net.IPNet) (ci *cacheItem, expired bool, k []byte) {
 	c.itemsWithSubnetLock.RLock()
-	defer c.itemsWithSubnetLock.RUnlock()
 
 	if !canLookUpInCache(c.itemsWithSubnet, req) {
+		c.itemsWithSubnetLock.RUnlock()
 		return nil, false, nil
 	}
 
@@ -415,17 +420,22 @@ func (c *cache) getWithSubnet(req *dns.Msg, n *net.IPNet) (ci *cacheItem, expire
 	}
 
 	if data == nil {
+		c.itemsWithSubnetLock.RUnlock()
 		return nil, false, k
 	}
 
+	var justReachedThreshold bool
 	if ci, expired = c.unpackItem(data, req); ci == nil {
 		c.itemsWithSubnet.Del(k)
+		c.itemsWithSubnetLock.RUnlock()
 	} else {
 		// Record request for cooldown mechanism.
-		justReachedThreshold := c.recordRequest(k)
+		justReachedThreshold = c.recordRequest(k)
+		c.itemsWithSubnetLock.RUnlock()
 
 		// If we just reached the threshold and haven't scheduled refresh yet,
 		// try to schedule it now (for dynamic threshold activation).
+		// This is called after releasing the lock to avoid deadlock.
 		if justReachedThreshold && c.optimistic && c.proactiveRefreshTime > 0 && c.cr != nil {
 			c.tryScheduleRefresh(k, req)
 		}
@@ -455,7 +465,8 @@ func createCache(cacheSize int) (glc glcache.Cache) {
 }
 
 // set stores response and upstream in the cache.  l must not be nil.
-func (c *cache) set(m *dns.Msg, u upstream.Upstream, l *slog.Logger) {
+// isRefresh indicates if this is from a proactive refresh operation.
+func (c *cache) set(m *dns.Msg, u upstream.Upstream, l *slog.Logger, isRefresh bool) {
 	item := c.respToItem(m, u, l)
 	if item == nil {
 		return
@@ -469,17 +480,33 @@ func (c *cache) set(m *dns.Msg, u upstream.Upstream, l *slog.Logger) {
 
 	c.items.Set(key, packed)
 
-	// Record this as a request for cooldown mechanism.
-	justReachedThreshold := c.recordRequest(key)
+	// Only record request if this is NOT a refresh operation.
+	// Refresh operations should not count towards request statistics.
+	var justReachedThreshold bool
+	if !isRefresh {
+		justReachedThreshold = c.recordRequest(key)
+	}
 
 	// Schedule proactive refresh if enabled.
+	// For refresh operations, always reschedule to continue the refresh cycle.
+	// For user requests, check cooldown mechanism first.
 	if c.optimistic && item.ttl > 0 && c.proactiveRefreshTime > 0 && c.cr != nil {
-		// First try normal scheduling (checks cooldown)
-		c.scheduleRefresh(key, item.ttl, m)
-		
-		// If we just reached threshold but scheduling was skipped earlier,
-		// the scheduleRefresh above will now succeed because shouldProactiveRefresh
-		// will return true. No need for additional logic here.
+		if isRefresh {
+			// For refresh operations, check if we should continue refreshing
+			if c.shouldProactiveRefresh(key) {
+				// Still hot, continue refreshing
+				c.scheduleRefresh(key, item.ttl, m)
+			} else {
+				// Cooled down, stop refreshing
+				if c.logger != nil && len(m.Question) > 0 {
+					c.logger.Debug("stopping refresh due to low request frequency",
+						"domain", m.Question[0].Name)
+				}
+			}
+		} else {
+			// For user requests, schedule normally (checks cooldown)
+			c.scheduleRefresh(key, item.ttl, m)
+		}
 	} else if justReachedThreshold && c.optimistic && c.proactiveRefreshTime > 0 && c.cr != nil {
 		// Edge case: if we just reached threshold but TTL is 0,
 		// we still won't schedule (which is correct behavior)
@@ -488,8 +515,8 @@ func (c *cache) set(m *dns.Msg, u upstream.Upstream, l *slog.Logger) {
 
 // setWithSubnet stores response and upstream with subnet in the cache.  The
 // given subnet mask and IP address are used to calculate the cache key.  l must
-// not be nil.
-func (c *cache) setWithSubnet(m *dns.Msg, u upstream.Upstream, subnet *net.IPNet, l *slog.Logger) {
+// not be nil.  isRefresh indicates if this is from a proactive refresh operation.
+func (c *cache) setWithSubnet(m *dns.Msg, u upstream.Upstream, subnet *net.IPNet, l *slog.Logger, isRefresh bool) {
 	item := c.respToItem(m, u, l)
 	if item == nil {
 		return
@@ -504,12 +531,29 @@ func (c *cache) setWithSubnet(m *dns.Msg, u upstream.Upstream, subnet *net.IPNet
 
 	c.itemsWithSubnet.Set(key, packed)
 
-	// Record this as a request for cooldown mechanism.
-	c.recordRequest(key)
+	// Only record request if this is NOT a refresh operation.
+	if !isRefresh {
+		c.recordRequest(key)
+	}
 
 	// Schedule proactive refresh if enabled.
 	if c.optimistic && item.ttl > 0 && c.proactiveRefreshTime > 0 && c.cr != nil {
-		c.scheduleRefresh(key, item.ttl, m)
+		if isRefresh {
+			// For refresh operations, check if we should continue refreshing
+			if c.shouldProactiveRefresh(key) {
+				// Still hot, continue refreshing
+				c.scheduleRefresh(key, item.ttl, m)
+			} else {
+				// Cooled down, stop refreshing
+				if c.logger != nil && len(m.Question) > 0 {
+					c.logger.Debug("stopping refresh due to low request frequency",
+						"domain", m.Question[0].Name)
+				}
+			}
+		} else {
+			// For user requests, schedule normally
+			c.scheduleRefresh(key, item.ttl, m)
+		}
 	}
 }
 
@@ -1021,7 +1065,8 @@ func (c *cache) refreshEntry(m *dns.Msg) {
 	}
 
 	dctx := &DNSContext{
-		Req: m.Copy(),
+		Req:       m.Copy(),
+		IsRefresh: true, // Mark as refresh operation
 	}
 
 	ok, err := c.cr.replyFromUpstream(dctx)

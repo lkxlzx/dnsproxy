@@ -83,7 +83,7 @@ func (p *Proxy) cacheResp(d *DNSContext) {
 	dctxCache := p.cacheForContext(d)
 
 	if !p.EnableEDNSClientSubnet {
-		dctxCache.set(d.Res, d.Upstream, p.logger)
+		dctxCache.set(d.Res, d.Upstream, p.logger, d.IsRefresh)
 
 		return
 	}
@@ -123,13 +123,13 @@ func (p *Proxy) cacheResp(d *DNSContext) {
 
 		p.logger.Debug("caching response", "ecs", ecs)
 
-		dctxCache.setWithSubnet(d.Res, d.Upstream, ecs, p.logger)
+		dctxCache.setWithSubnet(d.Res, d.Upstream, ecs, p.logger, d.IsRefresh)
 	case d.ReqECS != nil:
 		// Cache the response for all subnets since the server doesn't support
 		// EDNS Client Subnet option.
-		dctxCache.setWithSubnet(d.Res, d.Upstream, &net.IPNet{IP: nil, Mask: nil}, p.logger)
+		dctxCache.setWithSubnet(d.Res, d.Upstream, &net.IPNet{IP: nil, Mask: nil}, p.logger, d.IsRefresh)
 	default:
-		dctxCache.set(d.Res, d.Upstream, p.logger)
+		dctxCache.set(d.Res, d.Upstream, p.logger, d.IsRefresh)
 	}
 }
 

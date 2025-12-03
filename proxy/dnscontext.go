@@ -96,6 +96,10 @@ type DNSContext struct {
 
 	// doBit is the DNSSEC OK flag from request's EDNS0 RR if presented.
 	doBit bool
+
+	// IsRefresh is true if this request is from a proactive cache refresh
+	// operation, not from a real client request.
+	IsRefresh bool
 }
 
 // newDNSContext returns a new properly initialized *DNSContext.
