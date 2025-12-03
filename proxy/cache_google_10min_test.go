@@ -99,7 +99,7 @@ func TestGoogleCache_10MinSimulation(t *testing.T) {
 	t.Log("--------|-----------------|------|----------|----------|----------")
 
 	// Run for 10 minutes, making requests every 30 seconds
-	for elapsed := time.Duration(0); elapsed < 10*time.Minute; elapsed = time.Since(startTime) {
+	for time.Since(startTime) < 10*time.Minute {
 		requestNum++
 		totalRequests++
 
@@ -140,6 +140,7 @@ func TestGoogleCache_10MinSimulation(t *testing.T) {
 		totalResponseTime += responseTime
 
 		// Format elapsed time
+		elapsed := time.Since(startTime)
 		elapsedSec := int(elapsed.Seconds())
 		timeStr := fmt.Sprintf("%02d:%02d", elapsedSec/60, elapsedSec%60)
 
@@ -148,9 +149,12 @@ func TestGoogleCache_10MinSimulation(t *testing.T) {
 			timeStr, ip, ttl, float64(responseTime.Microseconds())/1000.0,
 			source, upstreamCount, answerCount)
 
-		// Wait 30 seconds before next request (unless it's the last iteration)
-		if elapsed < 10*time.Minute-30*time.Second {
+		// Wait 30 seconds before next request (unless we're close to the end)
+		if time.Since(startTime) < 10*time.Minute-30*time.Second {
 			time.Sleep(30 * time.Second)
+		} else {
+			// Exit the loop if we're in the last 30 seconds
+			break
 		}
 	}
 
