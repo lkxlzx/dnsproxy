@@ -25,6 +25,10 @@ type prefetchScheduler struct {
 	// Injected by cachePrefetch so the scheduler never touches extEntries.
 	shouldPrefetch func(domain string, qtype uint16) bool
 
+	// onEvict is called when a domain+qtype is evicted from the prefetch
+	// queue due to inactivity. May be nil.
+	onEvict func(domain string, qtype uint16)
+
 	running     atomic.Bool
 	activeTasks atomic.Int32
 
@@ -83,6 +87,13 @@ func (ps *prefetchScheduler) inactivityCheckLoop(ctx context.Context) {
 			removed := ps.heatTracker.checkInactivity(time.Now())
 			if len(removed) > 0 {
 				ps.logger.Debug("removed inactive domains", "count", len(removed))
+				// Notify cachePrefetch to clean up extEntries
+				if ps.onEvict != nil {
+					for _, key := range removed {
+						d, q := splitKey(key)
+						ps.onEvict(d, q)
+					}
+				}
 			}
 		}
 	}

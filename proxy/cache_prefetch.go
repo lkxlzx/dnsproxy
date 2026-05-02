@@ -78,6 +78,7 @@ cp.heatTracker = newHeatTracker(config.MinHeatThreshold, config.TimeWindow)
 cp.scheduler = newPrefetchScheduler(config, cp.heatTracker, logger)
 cp.scheduler.executor = cp.executePrefetchQuery
 cp.scheduler.shouldPrefetch = cp.shouldPrefetchDomain
+	cp.scheduler.onEvict = cp.onDomainEvicted
 
 cp.scheduler.start(ctx)
 
@@ -164,6 +165,21 @@ if joined {
 cp.logger.Debug("domain joined prefetch queue",
 "domain", domain, "qtype", qtype)
 }
+}
+
+// onDomainEvicted is called when a domain is evicted from the prefetch queue.
+// It cleans up the corresponding extEntry to prevent memory leaks.
+func (cp *cachePrefetch) onDomainEvicted(domain string, qtype uint16) {
+key := makeKey(domain, qtype)
+shard := cp.getShard(key)
+
+shard.mu.Lock()
+delete(shard.entries, key)
+shard.mu.Unlock()
+
+cp.logger.Debug("domain evicted from prefetch",
+"domain", domain,
+"qtype", qtype)
 }
 
 // ── TTL helpers ───────────────────────────────────────────────────────────────
