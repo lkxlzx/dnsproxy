@@ -38,6 +38,16 @@ type PrefetchConfig struct {
 	// InactivityCheckInterval is the interval for checking inactive domains.
 	// Default: 10 seconds
 	InactivityCheckInterval time.Duration
+
+	// MaxRetries is the maximum number of retry attempts for failed prefetch queries.
+	// 0 means no retries (fail immediately).
+	// Default: 2
+	MaxRetries int
+
+	// RetryDelay is the base delay between retry attempts.
+	// Actual delay uses exponential backoff: RetryDelay * (attempt + 1)
+	// Default: 1 second
+	RetryDelay time.Duration
 }
 
 // DefaultPrefetchConfig returns the default prefetch configuration.
@@ -51,5 +61,7 @@ func DefaultPrefetchConfig() *PrefetchConfig {
 		MinHeatThreshold:        6,
 		TimeWindow:              180 * time.Second,
 		InactivityCheckInterval: 10 * time.Second,
+		MaxRetries:              2,
+		RetryDelay:              1 * time.Second,
 	}
 }

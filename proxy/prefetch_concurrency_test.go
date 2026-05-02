@@ -92,11 +92,6 @@ func TestCachePrefetch_ConcurrentRecordAccess(t *testing.T) {
 	cp := newCachePrefetch(baseCache, config, p, testLogger)
 	defer cp.stop()
 
-	// Pre-populate base cache with a fake item so recordAccess has something to work with.
-	fakeItem := &cacheItem{
-		m: makeDNSResponse("concurrent.com.", 300),
-	}
-
 	domains := []string{"concurrent.com.", "stress.com.", "load.com.", "test.com.", "bench.com."}
 
 	var wg sync.WaitGroup
@@ -108,10 +103,9 @@ func TestCachePrefetch_ConcurrentRecordAccess(t *testing.T) {
 		g := g
 		go func() {
 			defer wg.Done()
-			now := time.Now()
 			for i := 0; i < iters; i++ {
 				d := domains[(g+i)%len(domains)]
-				cp.recordAccess(d, 1, fakeItem, now.Add(time.Duration(i)*time.Millisecond))
+				cp.recordAccess(d, 1)
 			}
 		}()
 	}
