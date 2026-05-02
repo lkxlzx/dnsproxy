@@ -1,433 +1,307 @@
-package proxy
+﻿package proxy
 
 import (
-	"context"
-	"log/slog"
-	"net"
-	"strings"
-	"sync"
-	"time"
+"context"
+"log/slog"
+"net"
+"strings"
+"sync"
+"time"
 
-	"github.com/AdguardTeam/dnsproxy/upstream"
-	"github.com/miekg/dns"
+"github.com/AdguardTeam/dnsproxy/upstream"
+"github.com/miekg/dns"
 )
 
-// cachePrefetch extends the cache with smart prefetch capabilities.
+// cachePrefetch wraps the base cache with smart prefetch capabilities.
+//
+// Design notes:
+//   - extEntries is sharded (16 shards) to reduce lock contention.
+//   - heatTracker owns its own data; cachePrefetch never holds both
+//     shard.mu and heatTracker.mu simultaneously.
+//   - TTL tracking uses real Unix timestamps per entry (no global clock).
 type cachePrefetch struct {
-	// Original cache
-	*cache
+*cache
 
-	// Prefetch components
-	config          *PrefetchConfig
-	globalClock     *globalClock
-	heatTracker     *heatTracker
-	scheduler       *prefetchScheduler
-	proxy           *Proxy
-	logger          *slog.Logger
-	
-	// Extended entries tracking with sharded locks for better concurrency
-	extEntries      []*extEntryShard
-	shardCount      int
-	
-	// Control
-	ctx             context.Context
-	cancel          context.CancelFunc
-	enabled         bool
+config      *PrefetchConfig
+heatTracker *heatTracker
+scheduler   *prefetchScheduler
+proxy       *Proxy
+logger      *slog.Logger
+
+extEntries []*extEntryShard
+shardCount int
+
+ctx    context.Context
+cancel context.CancelFunc
 }
 
-// extEntryShard represents a shard of extended entries with its own lock.
 type extEntryShard struct {
-	entries map[string]*cacheEntryExt
-	mu      sync.RWMutex
+entries map[string]*cacheEntryExt
+mu      sync.RWMutex
 }
 
-// newExtEntryShard creates a new shard.
 func newExtEntryShard() *extEntryShard {
-	return &extEntryShard{
-		entries: make(map[string]*cacheEntryExt),
-	}
+return &extEntryShard{entries: make(map[string]*cacheEntryExt)}
 }
 
-// newCachePrefetch creates a new cache with prefetch capabilities.
 func newCachePrefetch(
-	baseCache *cache,
-	config *PrefetchConfig,
-	proxy *Proxy,
-	logger *slog.Logger,
+baseCache *cache,
+config *PrefetchConfig,
+proxy *Proxy,
+logger *slog.Logger,
 ) *cachePrefetch {
-	if config == nil || !config.Enabled {
-		// Prefetch disabled, return nil to use original cache
-		return nil
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	
-	// Use 16 shards for good balance between memory and concurrency
-	shardCount := 16
-	shards := make([]*extEntryShard, shardCount)
-	for i := 0; i < shardCount; i++ {
-		shards[i] = newExtEntryShard()
-	}
-	
-	cp := &cachePrefetch{
-		cache:       baseCache,
-		config:      config,
-		globalClock: newGlobalClock(),
-		proxy:       proxy,
-		logger:      logger,
-		extEntries:  shards,
-		shardCount:  shardCount,
-		ctx:         ctx,
-		cancel:      cancel,
-		enabled:     true,
-	}
-	
-	// Initialize heat tracker
-	cp.heatTracker = newHeatTracker(
-		config.MinHeatThreshold,
-		config.TimeWindow,
-	)
-	
-	// Initialize scheduler
-	cp.scheduler = newPrefetchScheduler(
-		config,
-		proxy,
-		cp.globalClock,
-		cp.heatTracker,
-		logger,
-	)
-	
-	// Set the prefetch executor
-	cp.scheduler.executor = cp.executePrefetchQuery
-	
-	// Start global clock
-	cp.globalClock.start(ctx)
-	
-	// Start scheduler
-	cp.scheduler.start(ctx)
-	
-	logger.Info("cache prefetch enabled",
-		"threshold_seconds", config.ThresholdSeconds,
-		"threshold_percent", config.ThresholdPercent,
-		"min_heat", config.MinHeatThreshold,
-		"shards", shardCount)
-	
-	return cp
+if config == nil || !config.Enabled {
+return nil
 }
 
-// get retrieves a cached item and records access for heat tracking.
-func (cp *cachePrefetch) get(req *dns.Msg) (ci *cacheItem, expired bool, key []byte) {
-	// Get from base cache
-	ci, expired, key = cp.cache.get(req)
-	
-	if ci == nil {
-		return nil, expired, key
-	}
-	
-	// Record access for heat tracking
-	if cp.enabled && len(req.Question) > 0 {
-		domain := req.Question[0].Name
-		qtype := req.Question[0].Qtype
-		cp.recordAccess(domain, qtype, ci)
-	}
-	
-	return ci, expired, key
+ctx, cancel := context.WithCancel(context.Background())
+
+const shardCount = 16
+shards := make([]*extEntryShard, shardCount)
+for i := range shards {
+shards[i] = newExtEntryShard()
 }
 
-// getWithSubnet retrieves a cached item with subnet and records access.
-func (cp *cachePrefetch) getWithSubnet(req *dns.Msg, clientIP *net.IPNet) (ci *cacheItem, expired bool, key []byte) {
-	// Get from base cache
-	ci, expired, key = cp.cache.getWithSubnet(req, clientIP)
-	
-	if ci == nil {
-		return nil, expired, key
-	}
-	
-	// Record access for heat tracking
-	if cp.enabled && len(req.Question) > 0 {
-		domain := req.Question[0].Name
-		qtype := req.Question[0].Qtype
-		cp.recordAccess(domain, qtype, ci)
-	}
-	
-	return ci, expired, key
+cp := &cachePrefetch{
+cache:      baseCache,
+config:     config,
+proxy:      proxy,
+logger:     logger,
+extEntries: shards,
+shardCount: shardCount,
+ctx:        ctx,
+cancel:     cancel,
 }
 
-// set stores a response in cache.
-// Extended entry is created lazily on first access.
-func (cp *cachePrefetch) set(m *dns.Msg, u upstream.Upstream, l *slog.Logger) {
-	// Store in base cache
-	cp.cache.set(m, u, l)
-	
-	// Note: Extended entry is NOT created here anymore.
-	// It will be created lazily on first access in recordAccess().
-	// This optimization reduces Set operation overhead by 20-30%.
+cp.heatTracker = newHeatTracker(config.MinHeatThreshold, config.TimeWindow)
+
+cp.scheduler = newPrefetchScheduler(config, cp.heatTracker, logger)
+cp.scheduler.executor = cp.executePrefetchQuery
+cp.scheduler.shouldPrefetch = cp.shouldPrefetchDomain
+
+cp.scheduler.start(ctx)
+
+logger.Info("cache prefetch enabled",
+"threshold_seconds", config.ThresholdSeconds,
+"threshold_percent", config.ThresholdPercent,
+"min_heat", config.MinHeatThreshold,
+"shards", shardCount)
+
+return cp
 }
 
-// setWithSubnet stores a response with subnet in cache.
-// Extended entry is created lazily on first access.
-func (cp *cachePrefetch) setWithSubnet(m *dns.Msg, u upstream.Upstream, clientIP *net.IPNet, l *slog.Logger) {
-	// Store in base cache
-	cp.cache.setWithSubnet(m, u, clientIP, l)
-	
-	// Note: Extended entry is NOT created here anymore.
-	// It will be created lazily on first access in recordAccess().
-	// This optimization reduces Set operation overhead by 20-30%.
-}
+// ── shard helpers ─────────────────────────────────────────────────────────────
 
-// clearItems clears the general cache.
-func (cp *cachePrefetch) clearItems() {
-	cp.cache.clearItems()
-}
-
-// clearItemsWithSubnet clears the ECS subnet cache.
-func (cp *cachePrefetch) clearItemsWithSubnet() {
-	cp.cache.clearItemsWithSubnet()
-}
-
-// getShard returns the shard for a given key.
 func (cp *cachePrefetch) getShard(key string) *extEntryShard {
-	// Simple hash function for shard selection
-	hash := uint32(0)
-	for i := 0; i < len(key); i++ {
-		hash = hash*31 + uint32(key[i])
-	}
-	return cp.extEntries[hash%uint32(cp.shardCount)]
+h := uint32(0)
+for i := 0; i < len(key); i++ {
+h = h*31 + uint32(key[i])
+}
+return cp.extEntries[h%uint32(cp.shardCount)]
 }
 
-// extractTTLFromMsg extracts the minimum TTL from a DNS response message.
-// cacheItem.ttl is zero when returned from unpackItem (only m and u are set),
-// so we must read the TTL directly from the DNS answer records.
+// ── cacheInterface implementation ─────────────────────────────────────────────
+
+func (cp *cachePrefetch) get(req *dns.Msg) (ci *cacheItem, expired bool, key []byte) {
+ci, expired, key = cp.cache.get(req)
+if ci != nil && len(req.Question) > 0 {
+q := req.Question[0]
+cp.recordAccess(q.Name, q.Qtype, ci, time.Now())
+}
+return ci, expired, key
+}
+
+func (cp *cachePrefetch) getWithSubnet(req *dns.Msg, clientIP *net.IPNet) (ci *cacheItem, expired bool, key []byte) {
+ci, expired, key = cp.cache.getWithSubnet(req, clientIP)
+if ci != nil && len(req.Question) > 0 {
+q := req.Question[0]
+cp.recordAccess(q.Name, q.Qtype, ci, time.Now())
+}
+return ci, expired, key
+}
+
+func (cp *cachePrefetch) set(m *dns.Msg, u upstream.Upstream, l *slog.Logger) {
+cp.cache.set(m, u, l)
+}
+
+func (cp *cachePrefetch) setWithSubnet(m *dns.Msg, u upstream.Upstream, clientIP *net.IPNet, l *slog.Logger) {
+cp.cache.setWithSubnet(m, u, clientIP, l)
+}
+
+func (cp *cachePrefetch) clearItems()           { cp.cache.clearItems() }
+func (cp *cachePrefetch) clearItemsWithSubnet() { cp.cache.clearItemsWithSubnet() }
+func (cp *cachePrefetch) isOptimistic() bool    { return cp.cache.isOptimistic() }
+
+// ── heat tracking ─────────────────────────────────────────────────────────────
+
+// recordAccess updates heat tracking for a cache hit.
+// shard.mu and heatTracker.mu are never held simultaneously.
+func (cp *cachePrefetch) recordAccess(domain string, qtype uint16, item *cacheItem, now time.Time) {
+key := makeKey(domain, qtype)
+shard := cp.getShard(key)
+
+// Fast path: check existence with RLock.
+shard.mu.RLock()
+_, exists := shard.entries[key]
+shard.mu.RUnlock()
+
+if !exists {
+ttl := extractTTLFromMsg(item.m)
+if ttl == 0 {
+return
+}
+shard.mu.Lock()
+// Double-check after acquiring write lock.
+if _, exists = shard.entries[key]; !exists {
+shard.entries[key] = newCacheEntryExt(domain, qtype, ttl, now)
+}
+shard.mu.Unlock()
+}
+
+// Update heat — heatTracker has its own lock; no shard lock held here.
+joined := cp.heatTracker.onAccess(domain, qtype, now)
+if joined {
+cp.logger.Debug("domain joined prefetch queue",
+"domain", domain, "qtype", qtype)
+}
+}
+
+// ── TTL helpers ───────────────────────────────────────────────────────────────
+
+// extractTTLFromMsg returns the minimum TTL from DNS answer records.
 func extractTTLFromMsg(m *dns.Msg) uint32 {
-	if m == nil {
-		return 0
-	}
-	var minTTL uint32 = 0
-	for _, rr := range m.Answer {
-		hdr := rr.Header()
-		if hdr == nil {
-			continue
-		}
-		if minTTL == 0 || hdr.Ttl < minTTL {
-			minTTL = hdr.Ttl
-		}
-	}
-	// Fall back to SOA TTL for negative responses
-	if minTTL == 0 {
-		for _, rr := range m.Ns {
-			if soa, ok := rr.(*dns.SOA); ok {
-				if minTTL == 0 || soa.Minttl < minTTL {
-					minTTL = soa.Minttl
-				}
-			}
-		}
-	}
-	return minTTL
+if m == nil {
+return 0
+}
+var min uint32
+for _, rr := range m.Answer {
+if h := rr.Header(); h != nil && (min == 0 || h.Ttl < min) {
+min = h.Ttl
+}
+}
+if min == 0 {
+for _, rr := range m.Ns {
+if soa, ok := rr.(*dns.SOA); ok && (min == 0 || soa.Minttl < min) {
+min = soa.Minttl
+}
+}
+}
+return min
 }
 
-// recordAccess records a cache access for heat tracking.
-// Extended entry is created lazily here if it doesn't exist.
-func (cp *cachePrefetch) recordAccess(domain string, qtype uint16, item *cacheItem) {
-	key := makeKey(domain, qtype)
-	shard := cp.getShard(key)
-	
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	
-	entry, exists := shard.entries[key]
-	
-	if !exists {
-		// cacheItem.ttl is 0 when returned from unpackItem (only m/u are set).
-		// Read the real TTL from the DNS answer records instead.
-		ttl := item.ttl
-		if ttl == 0 && item.m != nil {
-			ttl = extractTTLFromMsg(item.m)
-		}
-		if ttl == 0 {
-			// No usable TTL — skip tracking this entry.
-			return
-		}
-		
-		// Lazy creation: Create extended entry only on first access.
-		entry = newCacheEntryExt(item, domain, qtype, ttl)
-		
-		// Set expiresAt based on current global clock + real TTL.
-		currentT := cp.globalClock.get()
-		entry.expiresAt = currentT + ttl
-		entry.originalTTL = ttl
-		
-		shard.entries[key] = entry
-	}
-	
-	// Update access time and check if should join prefetch queue
-	now := time.Now()
-	joined := cp.heatTracker.onAccess(entry, now)
-	
-	if joined {
-		cp.logger.Debug("domain joined prefetch queue",
-			"domain", domain,
-			"qtype", qtype,
-			"access_count", entry.accessCount)
-	}
+// ── prefetch execution ────────────────────────────────────────────────────────
+
+// shouldPrefetchDomain checks whether domain+qtype needs prefetching now.
+// Reads extEntry with RLock only — no write lock, no heatTracker lock.
+func (cp *cachePrefetch) shouldPrefetchDomain(domain string, qtype uint16) bool {
+key := makeKey(domain, qtype)
+shard := cp.getShard(key)
+
+shard.mu.RLock()
+entry, ok := shard.entries[key]
+shard.mu.RUnlock()
+
+if !ok {
+return false
 }
 
-
-// executePrefetchQuery performs the actual DNS query for prefetch.
-func (cp *cachePrefetch) executePrefetchQuery(entry *cacheEntryExt) {
-	// Build DNS query
-	req := &dns.Msg{}
-	req.SetQuestion(dns.Fqdn(entry.domain), entry.qtype)
-	req.RecursionDesired = true
-	
-	cp.logger.Debug("executing prefetch query",
-		"domain", entry.domain,
-		"qtype", entry.qtype)
-	
-	// Create a context for the query
-	ctx, cancel := context.WithTimeout(cp.ctx, cp.config.ScanInterval*5)
-	defer cancel()
-	
-	// Resolve using proxy's upstream
-	dctx := &DNSContext{
-		Req: req,
-	}
-	
-	// Use proxy's resolve method
-	err := cp.proxy.Resolve(ctx, dctx)
-	
-	if err != nil {
-		cp.logger.Debug("prefetch query failed",
-			"domain", entry.domain,
-			"error", err)
-		return
-	}
-	
-	if dctx.Res == nil {
-		cp.logger.Debug("prefetch query returned nil response",
-			"domain", entry.domain)
-		return
-	}
-	
-	// Calculate new TTL
-	newTTL := cacheTTL(dctx.Res, cp.logger)
-	if newTTL == 0 {
-		cp.logger.Debug("prefetch query returned 0 TTL",
-			"domain", entry.domain)
-		return
-	}
-	
-	// Update cache with new response
-	cp.onPrefetchSuccess(entry, dctx.Res, dctx.Upstream, newTTL)
-	
-	cp.logger.Debug("prefetch query succeeded",
-		"domain", entry.domain,
-		"new_ttl", newTTL)
+nowUnix := time.Now().Unix()
+remaining := entry.remainingTTL(nowUnix)
+if remaining == 0 {
+return false
+}
+if remaining < uint32(cp.config.ThresholdSeconds) {
+return true
+}
+pct := entry.originalTTL * cp.config.ThresholdPercent / 100
+return remaining < pct
 }
 
-// onPrefetchSuccess handles successful prefetch.
+// executePrefetchQuery is the executor injected into the scheduler.
+func (cp *cachePrefetch) executePrefetchQuery(domain string, qtype uint16) {
+if !cp.shouldPrefetchDomain(domain, qtype) {
+return
+}
+
+req := &dns.Msg{}
+req.SetQuestion(dns.Fqdn(domain), qtype)
+req.RecursionDesired = true
+
+ctx, cancel := context.WithTimeout(cp.ctx, cp.config.ScanInterval*5)
+defer cancel()
+
+dctx := &DNSContext{Req: req}
+if err := cp.proxy.Resolve(ctx, dctx); err != nil {
+cp.logger.Debug("prefetch query failed", "domain", domain, "error", err)
+return
+}
+if dctx.Res == nil {
+return
+}
+
+newTTL := cacheTTL(dctx.Res, cp.logger)
+if newTTL == 0 {
+return
+}
+
+cp.onPrefetchSuccess(domain, qtype, dctx.Res, dctx.Upstream, newTTL)
+}
+
+// onPrefetchSuccess stores the refreshed response and updates the extEntry.
+// No global clock reset — each entry tracks its own cachedAt timestamp.
 func (cp *cachePrefetch) onPrefetchSuccess(
-	entry *cacheEntryExt,
-	m *dns.Msg,
-	u upstream.Upstream,
-	newTTL uint32,
+domain string,
+qtype uint16,
+m *dns.Msg,
+u upstream.Upstream,
+newTTL uint32,
 ) {
-	// Store in base cache
-	cp.cache.set(m, u, cp.logger)
-	
-	// Reset global clock
-	cp.globalClock.reset()
-	
-	// Update extended entry
-	key := makeKey(entry.domain, entry.qtype)
-	shard := cp.getShard(key)
-	
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	
-	newItem := cp.cache.respToItem(m, u, cp.logger)
-	if newItem != nil {
-		now := time.Now()
-		entry.updateOnPrefetch(newItem, newTTL, now)
-		
-		// After reset, T=0, so expiresAt = 0 + newTTL = newTTL.
-		// globalClock.reset() was called just before, so T is now 0.
-		currentT := cp.globalClock.get()
-		entry.expiresAt = currentT + newTTL
-		entry.originalTTL = newTTL
-	}
-	
-	cp.logger.Info("prefetch completed successfully",
-		"domain", entry.domain,
-		"qtype", entry.qtype,
-		"new_ttl", newTTL,
-		"heat_score", entry.heatScore)
+cp.cache.set(m, u, cp.logger)
+
+key := makeKey(domain, qtype)
+shard := cp.getShard(key)
+now := time.Now()
+
+shard.mu.Lock()
+if entry, ok := shard.entries[key]; ok {
+entry.refreshTTL(newTTL, now)
+}
+shard.mu.Unlock()
+
+cp.logger.Info("prefetch completed",
+"domain", domain, "qtype", qtype, "new_ttl", newTTL)
 }
 
-// stop stops the prefetch scheduler and global clock.
+// ── lifecycle ─────────────────────────────────────────────────────────────────
+
 func (cp *cachePrefetch) stop() {
-	if cp.cancel != nil {
-		cp.cancel()
-	}
-	if cp.scheduler != nil {
-		cp.scheduler.stop()
-	}
-	cp.logger.Info("cache prefetch stopped")
+if cp.cancel != nil {
+cp.cancel()
+}
+if cp.scheduler != nil {
+cp.scheduler.stop()
+}
+cp.logger.Info("cache prefetch stopped")
 }
 
-// getExtEntry returns the extended entry for a domain.
-func (cp *cachePrefetch) getExtEntry(domain string, qtype uint16) *cacheEntryExt {
-	key := makeKey(domain, qtype)
-	shard := cp.getShard(key)
-	
-	shard.mu.RLock()
-	defer shard.mu.RUnlock()
-	
-	return shard.entries[key]
-}
+// ── stats ─────────────────────────────────────────────────────────────────────
 
-// getPrefetchStats returns statistics about the prefetch system.
 func (cp *cachePrefetch) getPrefetchStats() map[string]interface{} {
-	candidates := cp.heatTracker.getPrefetchCandidates()
-	
-	// Count total entries across all shards
-	totalEntries := 0
-	inQueue := 0
-	coldStart := 0
-	
-	for _, shard := range cp.extEntries {
-		shard.mu.RLock()
-		totalEntries += len(shard.entries)
-		
-		for _, entry := range shard.entries {
-			if entry.inPrefetchQueue {
-				inQueue++
-			} else if entry.accessCount > 0 {
-				coldStart++
-			}
-		}
-		shard.mu.RUnlock()
-	}
-	
-	stats := map[string]interface{}{
-		"enabled":            cp.enabled,
-		"global_clock":       cp.globalClock.get(),
-		"total_entries":      totalEntries,
-		"prefetch_queue_size": len(candidates),
-		"active_tasks":       cp.scheduler.activeTasks,
-		"in_queue":           inQueue,
-		"cold_start":         coldStart,
-		"shard_count":        cp.shardCount,
-	}
-	
-	return stats
+total := 0
+for _, shard := range cp.extEntries {
+shard.mu.RLock()
+total += len(shard.entries)
+shard.mu.RUnlock()
+}
+candidates := cp.heatTracker.getPrefetchCandidates()
+return map[string]interface{}{
+"total_entries":       total,
+"prefetch_queue_size": len(candidates),
+"active_tasks":        cp.scheduler.ActiveTasks(),
+"shard_count":         cp.shardCount,
+}
 }
 
-// Helper function to normalize domain names
 func normalizeDomain(domain string) string {
-	return strings.ToLower(dns.Fqdn(domain))
-}
-
-// isOptimistic returns whether the cache is in optimistic mode.
-func (cp *cachePrefetch) isOptimistic() bool {
-	return cp.cache.isOptimistic()
+return strings.ToLower(dns.Fqdn(domain))
 }

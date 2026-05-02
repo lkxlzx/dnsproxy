@@ -5,82 +5,63 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// prefetchScheduler manages the background prefetch tasks.
+// prefetchScheduler manages background prefetch tasks.
+// activeTasks uses atomic int32 to avoid a separate mutex.
+// The scheduler never touches extEntries directly; it delegates TTL checks
+// to the shouldPrefetch callback injected by cachePrefetch.
 type prefetchScheduler struct {
-	// Configuration
-	config *PrefetchConfig
+	config      *PrefetchConfig
+	heatTracker *heatTracker
+	logger      *slog.Logger
 
-	// Dependencies
-	proxy        *Proxy
-	globalClock  *globalClock
-	heatTracker  *heatTracker
-	logger       *slog.Logger
-	
-	// Executor function (injected)
-	executor     func(*cacheEntryExt)
+	// executor performs the actual DNS refresh for a domain+qtype.
+	executor func(domain string, qtype uint16)
 
-	// State
-	running      bool
-	runningMu    sync.RWMutex
-	activeTasks  int
-	activeTasksMu sync.Mutex
+	// shouldPrefetch checks whether a domain+qtype needs refreshing now.
+	// Injected by cachePrefetch so the scheduler never touches extEntries.
+	shouldPrefetch func(domain string, qtype uint16) bool
+
+	running     atomic.Bool
+	activeTasks atomic.Int32
+
+	// scanBuf is reused across scan() calls to reduce per-scan allocations.
+	scanBuf []heatSnapshot
+	scanMu  sync.Mutex
 }
 
-// newPrefetchScheduler creates a new prefetch scheduler.
 func newPrefetchScheduler(
 	config *PrefetchConfig,
-	proxy *Proxy,
-	globalClock *globalClock,
 	heatTracker *heatTracker,
 	logger *slog.Logger,
 ) *prefetchScheduler {
 	return &prefetchScheduler{
 		config:      config,
-		proxy:       proxy,
-		globalClock: globalClock,
 		heatTracker: heatTracker,
 		logger:      logger,
-		running:     false,
-		activeTasks: 0,
 	}
 }
 
-// start begins the prefetch scheduler.
 func (ps *prefetchScheduler) start(ctx context.Context) {
-	ps.runningMu.Lock()
-	if ps.running {
-		ps.runningMu.Unlock()
+	if !ps.running.CompareAndSwap(false, true) {
 		return
 	}
-	ps.running = true
-	ps.runningMu.Unlock()
-
-	// Start scan loop
 	go ps.scanLoop(ctx)
-
-	// Start inactivity check loop
 	go ps.inactivityCheckLoop(ctx)
-
 	ps.logger.Info("prefetch scheduler started")
 }
 
-// stop stops the prefetch scheduler.
 func (ps *prefetchScheduler) stop() {
-	ps.runningMu.Lock()
-	ps.running = false
-	ps.runningMu.Unlock()
-
+	ps.running.Store(false)
 	ps.logger.Info("prefetch scheduler stopped")
 }
 
-// scanLoop periodically scans for entries that need prefetching.
 func (ps *prefetchScheduler) scanLoop(ctx context.Context) {
 	ticker := time.NewTicker(ps.config.ScanInterval)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -91,137 +72,85 @@ func (ps *prefetchScheduler) scanLoop(ctx context.Context) {
 	}
 }
 
-// inactivityCheckLoop periodically checks for inactive domains.
 func (ps *prefetchScheduler) inactivityCheckLoop(ctx context.Context) {
 	ticker := time.NewTicker(ps.config.InactivityCheckInterval)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			ps.checkInactivity()
+			removed := ps.heatTracker.checkInactivity(time.Now())
+			if len(removed) > 0 {
+				ps.logger.Debug("removed inactive domains", "count", len(removed))
+			}
 		}
 	}
 }
 
-// scan scans the prefetch queue and triggers prefetch for eligible entries.
 func (ps *prefetchScheduler) scan() {
-	currentT := ps.globalClock.get()
-	candidates := ps.heatTracker.getPrefetchCandidates()
+	if ps.executor == nil || ps.shouldPrefetch == nil {
+		return
+	}
 
+	candidates := ps.heatTracker.getPrefetchCandidates()
 	if len(candidates) == 0 {
 		return
 	}
 
-	// Filter candidates that need prefetching
-	var needPrefetch []*cacheEntryExt
-	for _, entry := range candidates {
-		if ps.shouldPrefetch(entry, currentT) {
-			needPrefetch = append(needPrefetch, entry)
+	ps.scanMu.Lock()
+	needPrefetch := ps.scanBuf[:0]
+
+	for i := range candidates {
+		snap := &candidates[i]
+		if ps.shouldPrefetch(snap.domain, snap.qtype) {
+			needPrefetch = append(needPrefetch, *snap)
 		}
 	}
 
 	if len(needPrefetch) == 0 {
+		ps.scanBuf = needPrefetch
+		ps.scanMu.Unlock()
 		return
 	}
 
-	// Sort by heat score (descending)
+	// Sort by heat score descending so hottest domains are refreshed first.
 	sort.Slice(needPrefetch, func(i, j int) bool {
 		return needPrefetch[i].heatScore > needPrefetch[j].heatScore
 	})
 
-	// Limit by max concurrent tasks
-	ps.activeTasksMu.Lock()
-	available := ps.config.MaxConcurrent - ps.activeTasks
-	ps.activeTasksMu.Unlock()
-
+	available := int(int32(ps.config.MaxConcurrent) - ps.activeTasks.Load())
 	if available <= 0 {
+		ps.scanBuf = needPrefetch
+		ps.scanMu.Unlock()
 		return
 	}
-
 	if len(needPrefetch) > available {
 		needPrefetch = needPrefetch[:available]
 	}
 
-	// Trigger prefetch for selected entries
-	for _, entry := range needPrefetch {
-		ps.triggerPrefetch(entry)
+	// Copy before releasing lock so goroutines below have stable data.
+	toFire := make([]heatSnapshot, len(needPrefetch))
+	copy(toFire, needPrefetch)
+	ps.scanBuf = needPrefetch
+	ps.scanMu.Unlock()
+
+	for _, snap := range toFire {
+		ps.triggerPrefetch(snap.domain, snap.qtype)
 	}
 }
 
-// shouldPrefetch determines if an entry should be prefetched.
-func (ps *prefetchScheduler) shouldPrefetch(entry *cacheEntryExt, currentT uint32) bool {
-	if !entry.inPrefetchQueue {
-		return false
-	}
-
-	if entry.isExpired(currentT) {
-		return false // Already expired, will be handled by normal query
-	}
-
-	remainingTTL := entry.remainingTTL(currentT)
-
-	// Check fixed threshold (use < not <=)
-	fixedThreshold := ps.config.ThresholdSeconds
-	if remainingTTL < fixedThreshold {
-		return true
-	}
-
-	// Check percentage threshold
-	percentThreshold := entry.originalTTL * ps.config.ThresholdPercent / 100
-	if remainingTTL < percentThreshold {
-		return true
-	}
-
-	return false
-}
-
-// triggerPrefetch triggers a background prefetch for the given entry.
-func (ps *prefetchScheduler) triggerPrefetch(entry *cacheEntryExt) {
-	ps.activeTasksMu.Lock()
-	ps.activeTasks++
-	ps.activeTasksMu.Unlock()
-
+func (ps *prefetchScheduler) triggerPrefetch(domain string, qtype uint16) {
+	ps.activeTasks.Add(1)
 	go func() {
-		defer func() {
-			ps.activeTasksMu.Lock()
-			ps.activeTasks--
-			ps.activeTasksMu.Unlock()
-		}()
-
-		ps.executePrefetch(entry)
+		defer ps.activeTasks.Add(-1)
+		ps.logger.Debug("prefetch triggered", "domain", domain, "qtype", qtype)
+		ps.executor(domain, qtype)
+		ps.logger.Debug("prefetch completed", "domain", domain, "qtype", qtype)
 	}()
 }
 
-// executePrefetch performs the actual prefetch operation.
-func (ps *prefetchScheduler) executePrefetch(entry *cacheEntryExt) {
-	ps.logger.Debug("prefetch triggered",
-		"domain", entry.domain,
-		"qtype", entry.qtype,
-		"heat", entry.heatScore)
-
-	// Call the injected executor function
-	if ps.executor != nil {
-		ps.executor(entry)
-	} else {
-		ps.logger.Warn("prefetch executor not set, skipping",
-			"domain", entry.domain)
-	}
-
-	ps.logger.Debug("prefetch completed",
-		"domain", entry.domain,
-		"qtype", entry.qtype)
-}
-
-// checkInactivity checks for and removes inactive domains from the prefetch queue.
-func (ps *prefetchScheduler) checkInactivity() {
-	now := time.Now()
-	removed := ps.heatTracker.checkInactivity(now)
-
-	if len(removed) > 0 {
-		ps.logger.Debug("removed inactive domains from prefetch queue",
-			"count", len(removed))
-	}
+// ActiveTasks returns the number of in-flight prefetch goroutines.
+func (ps *prefetchScheduler) ActiveTasks() int {
+	return int(ps.activeTasks.Load())
 }

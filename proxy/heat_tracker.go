@@ -1,176 +1,168 @@
 package proxy
 
 import (
-	"sync"
-	"time"
+"sync"
+"time"
 )
 
+// heatEntry holds heat-tracking metadata for a single domain+qtype.
+type heatEntry struct {
+firstAccessTime time.Time
+lastAccessTime  time.Time
+accessCount     int
+inPrefetchQueue bool
+heatScore       int64
+}
+
 // heatTracker tracks domain access heat and manages the prefetch queue.
+// It owns its own data and is protected by a single mutex, eliminating the
+// previous double-lock pattern.
 type heatTracker struct {
-	// Configuration
-	minHeatThreshold int           // Minimum access count to join prefetch queue
-	timeWindow       time.Duration // Time window for cold-start and inactivity checks
+minHeatThreshold int
+timeWindow       time.Duration
 
-	// Tracking data
-	entries map[string]*cacheEntryExt // All tracked entries (domain+qtype as key)
-	mu      sync.RWMutex              // Protects entries map
-	
-	// Object pool for key strings to reduce allocations
-	keyPool sync.Pool
+mu      sync.Mutex
+entries map[string]*heatEntry
 }
 
-// newHeatTracker creates a new heat tracker.
 func newHeatTracker(minHeatThreshold int, timeWindow time.Duration) *heatTracker {
-	return &heatTracker{
-		minHeatThreshold: minHeatThreshold,
-		timeWindow:       timeWindow,
-		entries:          make(map[string]*cacheEntryExt),
-		keyPool: sync.Pool{
-			New: func() interface{} {
-				// Pre-allocate buffer for typical domain:qtype key
-				buf := make([]byte, 0, 256)
-				return &buf
-			},
-		},
-	}
+return &heatTracker{
+minHeatThreshold: minHeatThreshold,
+timeWindow:       timeWindow,
+entries:          make(map[string]*heatEntry),
+}
 }
 
-// makeKey creates a unique key for domain and query type.
-// Optimized version using string builder to reduce allocations.
+// makeKey creates a unique string key for domain + query type.
 func makeKey(domain string, qtype uint16) string {
-	// Fast path for common case
-	if len(domain) < 240 {
-		// Use stack-allocated buffer for small domains
-		buf := make([]byte, 0, len(domain)+6)
-		buf = append(buf, domain...)
-		buf = append(buf, ':')
-		buf = appendUint16(buf, qtype)
-		return string(buf)
-	}
-	// Slow path for very long domains
-	return domain + ":" + string(rune(qtype))
+buf := make([]byte, 0, len(domain)+6)
+buf = append(buf, domain...)
+buf = append(buf, ':')
+buf = appendUint16(buf, qtype)
+return string(buf)
 }
 
-// appendUint16 appends uint16 to byte slice efficiently.
 func appendUint16(buf []byte, n uint16) []byte {
-	if n < 10 {
-		return append(buf, byte('0'+n))
-	}
-	if n < 100 {
-		return append(buf, byte('0'+n/10), byte('0'+n%10))
-	}
-	if n < 1000 {
-		return append(buf, byte('0'+n/100), byte('0'+(n/10)%10), byte('0'+n%10))
-	}
-	if n < 10000 {
-		return append(buf, byte('0'+n/1000), byte('0'+(n/100)%10), byte('0'+(n/10)%10), byte('0'+n%10))
-	}
-	return append(buf, byte('0'+n/10000), byte('0'+(n/1000)%10), byte('0'+(n/100)%10), byte('0'+(n/10)%10), byte('0'+n%10))
+switch {
+case n < 10:
+return append(buf, byte('0'+n))
+case n < 100:
+return append(buf, byte('0'+n/10), byte('0'+n%10))
+case n < 1000:
+return append(buf, byte('0'+n/100), byte('0'+(n/10)%10), byte('0'+n%10))
+case n < 10000:
+return append(buf, byte('0'+n/1000), byte('0'+(n/100)%10), byte('0'+(n/10)%10), byte('0'+n%10))
+default:
+return append(buf, byte('0'+n/10000), byte('0'+(n/1000)%10), byte('0'+(n/100)%10), byte('0'+(n/10)%10), byte('0'+n%10))
+}
 }
 
-// onAccess handles domain access and updates heat tracking.
-// Returns true if the domain should be added to the prefetch queue.
-func (ht *heatTracker) onAccess(entry *cacheEntryExt, now time.Time) bool {
-	ht.mu.Lock()
-	defer ht.mu.Unlock()
+func (ht *heatTracker) onAccess(domain string, qtype uint16, now time.Time) bool {
+key := makeKey(domain, qtype)
+ht.mu.Lock()
+defer ht.mu.Unlock()
 
-	key := makeKey(entry.domain, entry.qtype)
-	ht.entries[key] = entry
-
-	if entry.inPrefetchQueue {
-		// Already in queue, just update heat score
-		entry.heatScore++
-		entry.lastAccessTime = now
-		return false
-	}
-
-	// Cold-start phase
-	if entry.firstAccessTime.IsZero() {
-		// First access
-		entry.firstAccessTime = now
-		entry.accessCount = 1
-		return false
-	}
-
-	// Check if still within time window
-	elapsed := now.Sub(entry.firstAccessTime)
-	if elapsed <= ht.timeWindow {
-		// Within time window, increment access count
-		entry.accessCount++
-
-		// Check if reached threshold
-		if entry.accessCount >= ht.minHeatThreshold {
-			// Add to prefetch queue
-			entry.inPrefetchQueue = true
-			entry.heatScore = int64(entry.accessCount)
-			entry.lastAccessTime = now
-			return true
-		}
-	} else {
-		// Exceeded time window, reset cold-start tracking
-		entry.firstAccessTime = now
-		entry.accessCount = 1
-	}
-
-	entry.lastAccessTime = now
-	return false
+e, ok := ht.entries[key]
+if !ok {
+e = &heatEntry{}
+ht.entries[key] = e
 }
 
-// checkInactivity removes inactive domains from the prefetch queue.
-// Returns the list of domains that were removed.
-func (ht *heatTracker) checkInactivity(now time.Time) []string {
-	ht.mu.Lock()
-	defer ht.mu.Unlock()
-
-	var removed []string
-	for key, entry := range ht.entries {
-		if !entry.inPrefetchQueue {
-			continue
-		}
-
-		// Check if inactive (no access for more than timeWindow)
-		// Use >= to match the design spec (>180s means >=181s)
-		interval := now.Sub(entry.lastAccessTime)
-		if interval > ht.timeWindow {
-			// Remove from prefetch queue
-			entry.inPrefetchQueue = false
-			entry.resetColdStart()
-			removed = append(removed, key)
-		}
-	}
-
-	return removed
+if e.inPrefetchQueue {
+e.heatScore++
+e.lastAccessTime = now
+return false
 }
 
-// getPrefetchCandidates returns all entries that are in the prefetch queue.
-func (ht *heatTracker) getPrefetchCandidates() []*cacheEntryExt {
-	ht.mu.RLock()
-	defer ht.mu.RUnlock()
-
-	var candidates []*cacheEntryExt
-	for _, entry := range ht.entries {
-		if entry.inPrefetchQueue {
-			candidates = append(candidates, entry)
-		}
-	}
-
-	return candidates
+if e.firstAccessTime.IsZero() {
+e.firstAccessTime = now
+e.accessCount = 1
+e.lastAccessTime = now
+return false
 }
 
-// getEntry returns the tracked entry for the given domain and qtype.
-func (ht *heatTracker) getEntry(domain string, qtype uint16) *cacheEntryExt {
-	ht.mu.RLock()
-	defer ht.mu.RUnlock()
-
-	key := makeKey(domain, qtype)
-	return ht.entries[key]
+elapsed := now.Sub(e.firstAccessTime)
+if elapsed <= ht.timeWindow {
+e.accessCount++
+e.lastAccessTime = now
+if e.accessCount >= ht.minHeatThreshold {
+e.inPrefetchQueue = true
+e.heatScore = int64(e.accessCount)
+return true
+}
+} else {
+e.firstAccessTime = now
+e.accessCount = 1
+e.lastAccessTime = now
+}
+return false
 }
 
-// removeEntry removes an entry from tracking.
-func (ht *heatTracker) removeEntry(domain string, qtype uint16) {
-	ht.mu.Lock()
-	defer ht.mu.Unlock()
+// heatSnapshot is a point-in-time view used by the scheduler.
+type heatSnapshot struct {
+domain    string
+qtype     uint16
+heatScore int64
+}
 
-	key := makeKey(domain, qtype)
-	delete(ht.entries, key)
+func (ht *heatTracker) getPrefetchCandidates() []heatSnapshot {
+ht.mu.Lock()
+defer ht.mu.Unlock()
+
+var out []heatSnapshot
+for key, e := range ht.entries {
+if !e.inPrefetchQueue {
+continue
+}
+d, q := splitKey(key)
+out = append(out, heatSnapshot{domain: d, qtype: q, heatScore: e.heatScore})
+}
+return out
+}
+
+func (ht *heatTracker) checkInactivity(now time.Time) (removed []string) {
+ht.mu.Lock()
+defer ht.mu.Unlock()
+
+for key, e := range ht.entries {
+if e.inPrefetchQueue {
+if now.Sub(e.lastAccessTime) > ht.timeWindow {
+e.inPrefetchQueue = false
+e.firstAccessTime = time.Time{}
+e.accessCount = 0
+e.heatScore = 0
+removed = append(removed, key)
+}
+continue
+}
+// Purge stale cold-start entries to prevent unbounded memory growth
+if !e.firstAccessTime.IsZero() && now.Sub(e.firstAccessTime) > ht.timeWindow*2 {
+delete(ht.entries, key)
+}
+}
+return removed
+}
+
+// splitKey reverses makeKey.
+func splitKey(key string) (domain string, qtype uint16) {
+for i := len(key) - 1; i >= 0; i-- {
+if key[i] == ':' {
+domain = key[:i]
+q := uint16(0)
+for _, c := range key[i+1:] {
+q = q*10 + uint16(c-'0')
+}
+return domain, q
+}
+}
+return key, 0
+}
+
+// isInQueue reports whether domain+qtype is in the prefetch queue.
+func (ht *heatTracker) isInQueue(domain string, qtype uint16) bool {
+key := makeKey(domain, qtype)
+ht.mu.Lock()
+e, ok := ht.entries[key]
+ht.mu.Unlock()
+return ok && e.inPrefetchQueue
 }

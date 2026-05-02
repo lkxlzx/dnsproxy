@@ -5,21 +5,20 @@ import (
 )
 
 // cacheEntryExt extends cacheItem with heat tracking and prefetch queue information.
-// This is used for the smart prefetch mechanism.
+// TTL tracking uses real Unix timestamps (cachedAt + originalTTL) instead of a
+// global clock, so each entry is independent and there is no shared mutable state
+// for expiry calculation.
 type cacheEntryExt struct {
-	// Original cache item
-	item *cacheItem
+	// TTL management (real Unix timestamps, never reset globally)
+	cachedAt    int64  // Unix timestamp when this entry was cached / last refreshed
+	originalTTL uint32 // TTL at cache time, used for percentage threshold
 
-	// TTL management (uses global clock T, resets on prefetch)
-	expiresAt   uint32 // Expiration time in global clock T
-	originalTTL uint32 // Original TTL value for percentage threshold calculation
-
-	// Heat management (uses real time, never resets)
-	lastAccessTime  time.Time // Last access time (real time)
-	firstAccessTime time.Time // First access time for cold-start phase (real time)
+	// Heat management (real time, never resets)
+	lastAccessTime  time.Time // Last access time
+	firstAccessTime time.Time // First access time for cold-start phase
 	accessCount     int       // Access count during cold-start phase
 	inPrefetchQueue bool      // Whether this domain is in the prefetch queue
-	heatScore       int64     // Current heat score
+	heatScore       int64     // Current heat score (incremented on each access)
 
 	// Domain and query type for identification
 	domain string
@@ -27,14 +26,12 @@ type cacheEntryExt struct {
 }
 
 // newCacheEntryExt creates a new extended cache entry.
-func newCacheEntryExt(item *cacheItem, domain string, qtype uint16, ttl uint32) *cacheEntryExt {
-	now := time.Now()
+func newCacheEntryExt(domain string, qtype uint16, ttl uint32, now time.Time) *cacheEntryExt {
 	return &cacheEntryExt{
-		item:            item,
-		expiresAt:       ttl,
+		cachedAt:        now.Unix(),
 		originalTTL:     ttl,
 		lastAccessTime:  now,
-		firstAccessTime: time.Time{}, // Will be set on first access
+		firstAccessTime: time.Time{}, // set on first onAccess call
 		accessCount:     0,
 		inPrefetchQueue: false,
 		heatScore:       0,
@@ -43,37 +40,28 @@ func newCacheEntryExt(item *cacheItem, domain string, qtype uint16, ttl uint32) 
 	}
 }
 
-// isExpired checks if the entry is expired based on the global clock.
-func (e *cacheEntryExt) isExpired(currentT uint32) bool {
-	return currentT >= e.expiresAt
-}
-
-// remainingTTL calculates the remaining TTL in seconds.
-func (e *cacheEntryExt) remainingTTL(currentT uint32) uint32 {
-	if currentT >= e.expiresAt {
+// remainingTTL returns remaining TTL in seconds relative to nowUnix.
+func (e *cacheEntryExt) remainingTTL(nowUnix int64) uint32 {
+	elapsed := nowUnix - e.cachedAt
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	if uint32(elapsed) >= e.originalTTL {
 		return 0
 	}
-	return e.expiresAt - currentT
+	return e.originalTTL - uint32(elapsed)
 }
 
-// updateOnAccess updates the entry when it's accessed.
-// This is called for both cache hits and misses (after fetching).
-func (e *cacheEntryExt) updateOnAccess(now time.Time) {
-	e.lastAccessTime = now
-
-	if e.inPrefetchQueue {
-		// Already in prefetch queue, just increment heat score
-		e.heatScore++
-	}
-	// Cold-start phase logic is handled by heatTracker
+// isExpired reports whether the entry has passed its TTL.
+func (e *cacheEntryExt) isExpired(nowUnix int64) bool {
+	return e.remainingTTL(nowUnix) == 0
 }
 
-// updateOnPrefetch updates the entry after a successful prefetch.
-func (e *cacheEntryExt) updateOnPrefetch(newItem *cacheItem, newTTL uint32, now time.Time) {
-	e.item = newItem
-	e.expiresAt = newTTL
+// refreshTTL resets cachedAt and originalTTL after a successful prefetch.
+func (e *cacheEntryExt) refreshTTL(newTTL uint32, now time.Time) {
+	e.cachedAt = now.Unix()
 	e.originalTTL = newTTL
-	e.lastAccessTime = now // Prefetch counts as activity
+	e.lastAccessTime = now
 }
 
 // resetColdStart resets the cold-start phase tracking.

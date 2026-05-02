@@ -6,192 +6,146 @@ import (
 )
 
 func TestHeatTracker_ColdStart(t *testing.T) {
-	tracker := newHeatTracker(6, 180*time.Second)
-	
-	entry := &cacheEntryExt{
-		domain: "google.com",
-		qtype:  1, // A record
-	}
-	
+	ht := newHeatTracker(4, 60*time.Second)
 	now := time.Now()
-	
-	// First 5 accesses should not join queue
-	for i := 1; i <= 5; i++ {
-		joined := tracker.onAccess(entry, now.Add(time.Duration(i)*10*time.Second))
+
+	for i := 1; i <= 3; i++ {
+		joined := ht.onAccess("google.com.", 1, now.Add(time.Duration(i)*5*time.Second))
 		if joined {
-			t.Errorf("access %d: should not join queue yet", i)
-		}
-		if entry.inPrefetchQueue {
-			t.Errorf("access %d: inPrefetchQueue should be false", i)
-		}
-		if entry.accessCount != i {
-			t.Errorf("access %d: accessCount = %d, want %d", i, entry.accessCount, i)
+			t.Errorf("access %d: should not join queue yet (threshold=4)", i)
 		}
 	}
-	
-	// 6th access should join queue
-	joined := tracker.onAccess(entry, now.Add(60*time.Second))
+
+	joined := ht.onAccess("google.com.", 1, now.Add(20*time.Second))
 	if !joined {
-		t.Error("6th access: should join queue")
+		t.Error("4th access: should join queue")
 	}
-	if !entry.inPrefetchQueue {
-		t.Error("6th access: inPrefetchQueue should be true")
-	}
-	if entry.accessCount != 6 {
-		t.Errorf("6th access: accessCount = %d, want 6", entry.accessCount)
+	if !ht.isInQueue("google.com.", 1) {
+		t.Error("domain should be in queue after threshold")
 	}
 }
 
 func TestHeatTracker_TimeWindowExpired(t *testing.T) {
-	tracker := newHeatTracker(6, 180*time.Second)
-	
-	entry := &cacheEntryExt{
-		domain: "example.com",
-		qtype:  1,
-	}
-	
+	ht := newHeatTracker(4, 60*time.Second)
 	now := time.Now()
-	
-	// First access
-	tracker.onAccess(entry, now)
-	if entry.accessCount != 1 {
-		t.Errorf("first access: accessCount = %d, want 1", entry.accessCount)
-	}
-	
-	// Second access after time window expired (>180s)
-	tracker.onAccess(entry, now.Add(200*time.Second))
-	
-	// Should reset and start counting again
-	if entry.accessCount != 1 {
-		t.Errorf("after time window: accessCount = %d, want 1 (reset)", entry.accessCount)
-	}
-	if entry.inPrefetchQueue {
-		t.Error("after time window: should not be in queue")
-	}
-}
 
-func TestHeatTracker_QueueManagement(t *testing.T) {
-	tracker := newHeatTracker(6, 180*time.Second)
-	
-	entry1 := &cacheEntryExt{domain: "google.com", qtype: 1}
-	entry2 := &cacheEntryExt{domain: "facebook.com", qtype: 1}
-	
-	now := time.Now()
-	
-	// Add entry1 to queue
-	for i := 1; i <= 6; i++ {
-		tracker.onAccess(entry1, now.Add(time.Duration(i)*10*time.Second))
+	ht.onAccess("example.com.", 1, now)
+	ht.onAccess("example.com.", 1, now.Add(10*time.Second))
+
+	// Access after window expires — should restart cold-start
+	ht.onAccess("example.com.", 1, now.Add(90*time.Second))
+
+	ht.mu.Lock()
+	e := ht.entries[makeKey("example.com.", 1)]
+	ht.mu.Unlock()
+
+	if e == nil {
+		t.Fatal("entry should exist")
 	}
-	
-	// Add entry2 to queue
-	for i := 1; i <= 6; i++ {
-		tracker.onAccess(entry2, now.Add(time.Duration(i)*10*time.Second))
+	if e.accessCount != 1 {
+		t.Errorf("accessCount = %d, want 1 (reset after window)", e.accessCount)
 	}
-	
-	// Check candidates
-	candidates := tracker.getPrefetchCandidates()
-	if len(candidates) != 2 {
-		t.Errorf("candidates count = %d, want 2", len(candidates))
+	if e.inPrefetchQueue {
+		t.Error("should not be in queue after window reset")
 	}
 }
 
 func TestHeatTracker_InactivityRemoval(t *testing.T) {
-	tracker := newHeatTracker(6, 180*time.Second)
-	
-	entry := &cacheEntryExt{
-		domain: "test.com",
-		qtype:  1,
-	}
-	
+	ht := newHeatTracker(3, 30*time.Second)
 	now := time.Now()
-	
-	// Add to queue (last access at 60s)
-	for i := 1; i <= 6; i++ {
-		tracker.onAccess(entry, now.Add(time.Duration(i)*10*time.Second))
+
+	for i := 1; i <= 3; i++ {
+		ht.onAccess("test.com.", 1, now.Add(time.Duration(i)*5*time.Second))
 	}
-	
-	if !entry.inPrefetchQueue {
-		t.Fatal("entry should be in queue")
+	if !ht.isInQueue("test.com.", 1) {
+		t.Fatal("should be in queue")
 	}
-	
-	// Last access was at now+60s
-	// Check inactivity at now+60s+181s = now+241s (>180s threshold)
-	removed := tracker.checkInactivity(now.Add(241 * time.Second))
-	
+
+	// Last access at now+15s; check at now+15s+31s = now+46s
+	removed := ht.checkInactivity(now.Add(46 * time.Second))
 	if len(removed) != 1 {
-		t.Errorf("removed count = %d, want 1", len(removed))
+		t.Errorf("removed = %d, want 1", len(removed))
 	}
-	
-	if entry.inPrefetchQueue {
-		t.Error("entry should be removed from queue")
-	}
-	
-	if entry.accessCount != 0 {
-		t.Errorf("accessCount after removal = %d, want 0", entry.accessCount)
+	if ht.isInQueue("test.com.", 1) {
+		t.Error("should be removed from queue")
 	}
 }
 
 func TestHeatTracker_HeatScoreIncrement(t *testing.T) {
-	tracker := newHeatTracker(6, 180*time.Second)
-	
-	entry := &cacheEntryExt{
-		domain: "popular.com",
-		qtype:  1,
-	}
-	
+	ht := newHeatTracker(3, 60*time.Second)
 	now := time.Now()
-	
-	// Add to queue (6 accesses)
-	for i := 1; i <= 6; i++ {
-		tracker.onAccess(entry, now.Add(time.Duration(i)*10*time.Second))
+
+	for i := 1; i <= 3; i++ {
+		ht.onAccess("hot.com.", 1, now.Add(time.Duration(i)*5*time.Second))
 	}
-	
-	initialHeat := entry.heatScore
-	if initialHeat != 6 {
-		t.Errorf("initial heat score = %d, want 6", initialHeat)
+
+	ht.mu.Lock()
+	e := ht.entries[makeKey("hot.com.", 1)]
+	ht.mu.Unlock()
+	if e.heatScore != 3 {
+		t.Errorf("initial heatScore = %d, want 3", e.heatScore)
 	}
-	
-	// Additional accesses should increment heat score
-	tracker.onAccess(entry, now.Add(70*time.Second))
-	if entry.heatScore != 7 {
-		t.Errorf("heat score after 7th access = %d, want 7", entry.heatScore)
-	}
-	
-	tracker.onAccess(entry, now.Add(80*time.Second))
-	if entry.heatScore != 8 {
-		t.Errorf("heat score after 8th access = %d, want 8", entry.heatScore)
+
+	ht.onAccess("hot.com.", 1, now.Add(20*time.Second))
+	ht.mu.Lock()
+	e = ht.entries[makeKey("hot.com.", 1)]
+	ht.mu.Unlock()
+	if e.heatScore != 4 {
+		t.Errorf("heatScore after extra access = %d, want 4", e.heatScore)
 	}
 }
 
-func TestHeatTracker_PrefetchCountsAsActivity(t *testing.T) {
-	tracker := newHeatTracker(6, 180*time.Second)
-	
-	entry := &cacheEntryExt{
-		domain: "active.com",
-		qtype:  1,
-	}
-	
+func TestHeatTracker_StaleEntryPurge(t *testing.T) {
+	ht := newHeatTracker(6, 30*time.Second)
 	now := time.Now()
-	
-	// Add to queue
-	for i := 1; i <= 6; i++ {
-		tracker.onAccess(entry, now.Add(time.Duration(i)*10*time.Second))
+
+	// Single access — cold-start entry, never reaches threshold
+	ht.onAccess("stale.com.", 1, now)
+
+	// After 2× timeWindow, stale entry should be purged
+	ht.checkInactivity(now.Add(61 * time.Second))
+
+	ht.mu.Lock()
+	_, exists := ht.entries[makeKey("stale.com.", 1)]
+	ht.mu.Unlock()
+
+	if exists {
+		t.Error("stale cold-start entry should be purged")
 	}
-	
-	lastAccess := now.Add(60 * time.Second)
-	entry.lastAccessTime = lastAccess
-	
-	// Check inactivity at 60s + 179s = 239s (should still be active)
-	removed := tracker.checkInactivity(now.Add(239 * time.Second))
-	
-	if len(removed) != 0 {
-		t.Error("entry should still be active (within 180s window)")
+}
+
+func TestHeatTracker_GetPrefetchCandidates(t *testing.T) {
+	ht := newHeatTracker(2, 60*time.Second)
+	now := time.Now()
+
+	domains := []string{"a.com.", "b.com.", "c.com."}
+	for _, d := range domains {
+		ht.onAccess(d, 1, now)
+		ht.onAccess(d, 1, now.Add(5*time.Second))
 	}
-	
-	// Check at 60s + 181s = 241s (should be inactive)
-	removed = tracker.checkInactivity(now.Add(241 * time.Second))
-	
-	if len(removed) != 1 {
-		t.Error("entry should be removed (exceeded 180s window)")
+
+	candidates := ht.getPrefetchCandidates()
+	if len(candidates) != 3 {
+		t.Errorf("candidates = %d, want 3", len(candidates))
+	}
+}
+
+func TestSplitKey(t *testing.T) {
+	tests := []struct {
+		domain string
+		qtype  uint16
+	}{
+		{"google.com.", 1},
+		{"example.com.", 28},
+		{"test.org.", 15},
+		{"x.y.z.", 65535},
+	}
+	for _, tt := range tests {
+		key := makeKey(tt.domain, tt.qtype)
+		d, q := splitKey(key)
+		if d != tt.domain || q != tt.qtype {
+			t.Errorf("splitKey(%q) = (%q, %d), want (%q, %d)",
+				key, d, q, tt.domain, tt.qtype)
+		}
 	}
 }

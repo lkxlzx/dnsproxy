@@ -1,58 +1,27 @@
 package proxy
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 )
 
-// BenchmarkCacheGet benchmarks cache get operations
 func BenchmarkCacheGet(b *testing.B) {
-	// Create a basic cache
-	baseCache := newCache(&cacheConfig{
-		size:       1024 * 1024,
-		optimistic: false,
-	})
-
-	// Prepare test data
+	c := newCache(&cacheConfig{size: 1024 * 1024})
 	req := &dns.Msg{}
 	req.SetQuestion("example.com.", dns.TypeA)
-
-	resp := &dns.Msg{}
-	resp.SetReply(req)
-	resp.Answer = []dns.RR{
-		&dns.A{
-			Hdr: dns.RR_Header{
-				Name:   "example.com.",
-				Rrtype: dns.TypeA,
-				Class:  dns.ClassINET,
-				Ttl:    300,
-			},
-			A: []byte{1, 2, 3, 4},
-		},
-	}
-
-	// Store in cache
-	baseCache.set(resp, nil, testLogger)
+	c.set(makeTestResp(req, 300), nil, testLogger)
 
 	b.ResetTimer()
 	b.ReportAllocs()
-
 	for i := 0; i < b.N; i++ {
-		_, _, _ = baseCache.get(req)
+		_, _, _ = c.get(req)
 	}
 }
 
-// BenchmarkCacheGetWithPrefetch benchmarks cache get with prefetch enabled
 func BenchmarkCacheGetWithPrefetch(b *testing.B) {
-	// Create cache with prefetch
-	baseCache := newCache(&cacheConfig{
-		size:       1024 * 1024,
-		optimistic: false,
-	})
-
+	baseCache := newCache(&cacheConfig{size: 1024 * 1024})
 	config := &PrefetchConfig{
 		Enabled:                 true,
 		ThresholdSeconds:        5,
@@ -63,86 +32,35 @@ func BenchmarkCacheGetWithPrefetch(b *testing.B) {
 		TimeWindow:              180 * time.Second,
 		InactivityCheckInterval: 10 * time.Second,
 	}
+	p := &Proxy{Config: Config{CachePrefetchConfig: config}}
+	cp := newCachePrefetch(baseCache, config, p, testLogger)
+	defer cp.stop()
 
-	// Create minimal proxy for testing
-	proxy := &Proxy{
-		Config: Config{
-			CachePrefetchConfig: config,
-		},
+	req := &dns.Msg{}
+	req.SetQuestion("example.com.", dns.TypeA)
+	cp.set(makeTestResp(req, 300), nil, testLogger)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = cp.get(req)
 	}
+}
 
-	cachePrefetch := newCachePrefetch(baseCache, config, proxy, testLogger)
-
-	// Prepare test data
+func BenchmarkCacheSet(b *testing.B) {
+	c := newCache(&cacheConfig{size: 1024 * 1024})
 	req := &dns.Msg{}
 	req.SetQuestion("example.com.", dns.TypeA)
 
-	resp := &dns.Msg{}
-	resp.SetReply(req)
-	resp.Answer = []dns.RR{
-		&dns.A{
-			Hdr: dns.RR_Header{
-				Name:   "example.com.",
-				Rrtype: dns.TypeA,
-				Class:  dns.ClassINET,
-				Ttl:    300,
-			},
-			A: []byte{1, 2, 3, 4},
-		},
-	}
-
-	// Store in cache
-	cachePrefetch.set(resp, nil, testLogger)
-
 	b.ResetTimer()
 	b.ReportAllocs()
-
 	for i := 0; i < b.N; i++ {
-		_, _, _ = cachePrefetch.get(req)
-	}
-
-	cachePrefetch.stop()
-}
-
-// BenchmarkCacheSet benchmarks cache set operations
-func BenchmarkCacheSet(b *testing.B) {
-	baseCache := newCache(&cacheConfig{
-		size:       1024 * 1024,
-		optimistic: false,
-	})
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		req := &dns.Msg{}
-		req.SetQuestion("example.com.", dns.TypeA)
-
-		resp := &dns.Msg{}
-		resp.SetReply(req)
-		resp.Answer = []dns.RR{
-			&dns.A{
-				Hdr: dns.RR_Header{
-					Name:   "example.com.",
-					Rrtype: dns.TypeA,
-					Class:  dns.ClassINET,
-					Ttl:    300,
-				},
-				A: []byte{1, 2, 3, 4},
-			},
-		}
-
-		baseCache.set(resp, nil, testLogger)
+		c.set(makeTestResp(req, 300), nil, testLogger)
 	}
 }
 
-// BenchmarkCacheSetWithPrefetch benchmarks cache set with prefetch enabled
 func BenchmarkCacheSetWithPrefetch(b *testing.B) {
-	baseCache := newCache(&cacheConfig{
-		size:       1024 * 1024,
-		optimistic: false,
-	})
-
+	baseCache := newCache(&cacheConfig{size: 1024 * 1024})
 	config := &PrefetchConfig{
 		Enabled:                 true,
 		ThresholdSeconds:        5,
@@ -153,145 +71,40 @@ func BenchmarkCacheSetWithPrefetch(b *testing.B) {
 		TimeWindow:              180 * time.Second,
 		InactivityCheckInterval: 10 * time.Second,
 	}
+	p := &Proxy{Config: Config{CachePrefetchConfig: config}}
+	cp := newCachePrefetch(baseCache, config, p, testLogger)
+	defer cp.stop()
 
-	proxy := &Proxy{
-		Config: Config{
-			CachePrefetchConfig: config,
-		},
-	}
-
-	cachePrefetch := newCachePrefetch(baseCache, config, proxy, testLogger)
+	req := &dns.Msg{}
+	req.SetQuestion("example.com.", dns.TypeA)
 
 	b.ResetTimer()
 	b.ReportAllocs()
-
 	for i := 0; i < b.N; i++ {
-		req := &dns.Msg{}
-		req.SetQuestion("example.com.", dns.TypeA)
-
-		resp := &dns.Msg{}
-		resp.SetReply(req)
-		resp.Answer = []dns.RR{
-			&dns.A{
-				Hdr: dns.RR_Header{
-					Name:   "example.com.",
-					Rrtype: dns.TypeA,
-					Class:  dns.ClassINET,
-					Ttl:    300,
-				},
-				A: []byte{1, 2, 3, 4},
-			},
-		}
-
-		cachePrefetch.set(resp, nil, testLogger)
-	}
-
-	cachePrefetch.stop()
-}
-
-// BenchmarkHeatTrackerOnAccess benchmarks heat tracker access recording
-func BenchmarkHeatTrackerOnAccess(b *testing.B) {
-	tracker := newHeatTracker(6, 180*time.Second)
-
-	entry := &cacheEntryExt{
-		domain: "example.com.",
-		qtype:  dns.TypeA,
-	}
-
-	now := time.Now()
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		tracker.onAccess(entry, now)
+		cp.set(makeTestResp(req, 300), nil, testLogger)
 	}
 }
 
-// BenchmarkGlobalClockGet benchmarks global clock read operations
-func BenchmarkGlobalClockGet(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	clock := newGlobalClock()
-	clock.start(ctx)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		_ = clock.get()
-	}
-}
-
-// BenchmarkPrefetchSchedulerShouldPrefetch benchmarks prefetch decision logic
 func BenchmarkPrefetchSchedulerShouldPrefetch(b *testing.B) {
 	config := DefaultPrefetchConfig()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ht := newHeatTracker(config.MinHeatThreshold, config.TimeWindow)
+	baseCache := newCache(&cacheConfig{size: 1024 * 1024})
+	p := &Proxy{Config: Config{CachePrefetchConfig: config}}
+	cp := newCachePrefetch(baseCache, config, p, testLogger)
+	defer cp.stop()
 
-	clock := newGlobalClock()
-	clock.start(ctx)
+	now := time.Now()
+	key := makeKey("example.com.", dns.TypeA)
+	shard := cp.getShard(key)
+	shard.mu.Lock()
+	shard.entries[key] = newCacheEntryExt("example.com.", dns.TypeA, 300, now)
+	shard.mu.Unlock()
 
-	tracker := newHeatTracker(config.MinHeatThreshold, config.TimeWindow)
-
-	proxy := &Proxy{
-		Config: Config{
-			CachePrefetchConfig: config,
-		},
-	}
-
-	scheduler := newPrefetchScheduler(config, proxy, clock, tracker, testLogger)
-
-	entry := &cacheEntryExt{
-		domain:          "example.com.",
-		qtype:           dns.TypeA,
-		expiresAt:       100,
-		originalTTL:     300,
-		inPrefetchQueue: true,
-	}
+	_ = ht
 
 	b.ResetTimer()
 	b.ReportAllocs()
-
 	for i := 0; i < b.N; i++ {
-		_ = scheduler.shouldPrefetch(entry, 50)
+		_ = cp.shouldPrefetchDomain("example.com.", dns.TypeA)
 	}
-}
-
-// BenchmarkConcurrentCacheAccess benchmarks concurrent cache access
-func BenchmarkConcurrentCacheAccess(b *testing.B) {
-	baseCache := newCache(&cacheConfig{
-		size:       1024 * 1024,
-		optimistic: false,
-	})
-
-	// Prepare test data
-	req := &dns.Msg{}
-	req.SetQuestion("example.com.", dns.TypeA)
-
-	resp := &dns.Msg{}
-	resp.SetReply(req)
-	resp.Answer = []dns.RR{
-		&dns.A{
-			Hdr: dns.RR_Header{
-				Name:   "example.com.",
-				Rrtype: dns.TypeA,
-				Class:  dns.ClassINET,
-				Ttl:    300,
-			},
-			A: []byte{1, 2, 3, 4},
-		},
-	}
-
-	baseCache.set(resp, nil, testLogger)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			_, _, _ = baseCache.get(req)
-		}
-	})
 }
