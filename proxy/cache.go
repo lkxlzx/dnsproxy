@@ -173,13 +173,38 @@ func (p *Proxy) initCache() {
 
 	size := p.CacheSizeBytes
 	p.logger.Info("cache enabled", "size", size)
-	p.cache = newCache(&cacheConfig{
+	
+	// Create base cache
+	baseCache := newCache(&cacheConfig{
 		size:             size,
 		optimisticTTL:    p.CacheOptimisticAnswerTTL,
 		optimisticMaxAge: p.CacheOptimisticMaxAge,
 		withECS:          p.EnableEDNSClientSubnet,
 		optimistic:       p.CacheOptimistic,
 	})
+	
+	// Try to create prefetch cache
+	if p.CachePrefetchConfig != nil && p.CachePrefetchConfig.Enabled {
+		cachePrefetch := newCachePrefetch(
+			baseCache,
+			p.CachePrefetchConfig,
+			p,
+			p.logger,
+		)
+		
+		if cachePrefetch != nil {
+			// Use prefetch-enabled cache (complete replacement)
+			p.cache = cachePrefetch
+			p.logger.Info("cache prefetch initialized")
+		} else {
+			// Fallback to base cache
+			p.cache = baseCache
+		}
+	} else {
+		// Use base cache without prefetch
+		p.cache = baseCache
+	}
+	
 	p.shortFlighter = newOptimisticResolver(p)
 }
 
@@ -652,4 +677,9 @@ func filterMsg(dst, m *dns.Msg, ad, do bool, ttl uint32) {
 	dst.Answer = filterRRSlice(m.Answer, do, ttl, m.Question[0].Qtype)
 	dst.Ns = filterRRSlice(m.Ns, do, ttl, dns.TypeNone)
 	dst.Extra = filterRRSlice(m.Extra, do, ttl, dns.TypeNone)
+}
+
+// isOptimistic returns whether the cache is in optimistic mode.
+func (c *cache) isOptimistic() bool {
+	return c.optimistic
 }

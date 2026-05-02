@@ -103,7 +103,7 @@ type Proxy struct {
 	// cache is used to cache requests.  It is disabled if nil.
 	//
 	// TODO(d.kolyshev): Move this cache to [Proxy.UpstreamConfig] field.
-	cache *cache
+	cache cacheInterface
 
 	// shortFlighter is used to resolve the expired cached requests without
 	// repetitions.

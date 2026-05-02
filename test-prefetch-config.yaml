@@ -1,0 +1,32 @@
+# DNSProxy Test Configuration with Smart Prefetch
+
+# Listen addresses
+listen-addrs:
+  - 127.0.0.1
+
+listen-ports:
+  - 53
+
+# Upstream DNS servers
+upstream:
+  - 8.8.8.8
+  - 1.1.1.1
+
+# Cache configuration
+cache: true
+cache-size: 10000
+cache-min-ttl: 0
+cache-max-ttl: 0
+
+# Smart prefetch configuration (NEW)
+cache-prefetch-enabled: true
+cache-prefetch-threshold-seconds: 5
+cache-prefetch-threshold-percent: 80
+cache-prefetch-max-concurrent: 10
+cache-prefetch-scan-interval: 1s
+cache-prefetch-min-heat-threshold: 6
+cache-prefetch-time-window: 180s
+cache-prefetch-inactivity-check-interval: 10s
+
+# Logging
+verbose: true

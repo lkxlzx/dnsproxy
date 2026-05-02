@@ -6,7 +6,7 @@ import (
 )
 
 // cacheForContext returns cache object for the given context.
-func (p *Proxy) cacheForContext(d *DNSContext) (c *cache) {
+func (p *Proxy) cacheForContext(d *DNSContext) (c cacheInterface) {
 	if d.CustomUpstreamConfig != nil && d.CustomUpstreamConfig.cache != nil {
 		return d.CustomUpstreamConfig.cache
 	}
@@ -46,7 +46,7 @@ func (p *Proxy) replyFromCache(d *DNSContext) (hit bool) {
 		"ecs_enabled", p.Config.EnableEDNSClientSubnet,
 	)
 
-	if dctxCache.optimistic && expired {
+	if dctxCache.isOptimistic() && expired {
 		// Build a reduced clone of the current context to avoid data race.
 		minCtxClone := &DNSContext{
 			// It is only read inside the optimistic resolver.

@@ -218,7 +218,7 @@ type CustomUpstreamConfig struct {
 	// It is disabled if nil.
 	//
 	// TODO(d.kolyshev): Move this cache to [UpstreamConfig].
-	cache *cache
+	cache cacheInterface
 }
 
 // NewCustomUpstreamConfig returns new custom upstream configuration.
@@ -228,7 +228,7 @@ func NewCustomUpstreamConfig(
 	cacheSize int,
 	enableEDNSClientSubnet bool,
 ) (c *CustomUpstreamConfig) {
-	var customCache *cache
+	var customCache cacheInterface
 	if cacheEnabled {
 		// TODO(d.kolyshev): Support optimistic with newOptimisticResolver.
 		customCache = newCache(&cacheConfig{

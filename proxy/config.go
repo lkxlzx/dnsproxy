@@ -159,6 +159,11 @@ type Config struct {
 	// when cache is optimistic.  Default value is [DefaultOptimisticMaxAge].
 	CacheOptimisticMaxAge time.Duration
 
+	// CachePrefetchConfig is the configuration for smart cache prefetching.
+	// If nil, prefetching is disabled and the cache uses the original passive
+	// expiration mechanism.
+	CachePrefetchConfig *PrefetchConfig
+
 	// MaxGoroutines is the maximum number of goroutines processing DNS
 	// requests.  Important for mobile users.
 	//

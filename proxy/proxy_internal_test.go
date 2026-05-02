@@ -551,7 +551,12 @@ func TestProxy_Resolve_dnssecCache(t *testing.T) {
 		dctx := newDNSContext(ansHdr.Name, ansHdr.Rrtype, ansHdr.Class, tc.edns, txtDataLen/2)
 
 		t.Run(tc.name, func(t *testing.T) {
-			t.Cleanup(p.cache.items.Clear)
+			// Type assert to access internal cache for testing
+			if baseCache, ok := p.cache.(*cache); ok {
+				t.Cleanup(baseCache.items.Clear)
+			} else if prefetchCache, ok := p.cache.(*cachePrefetch); ok {
+				t.Cleanup(prefetchCache.cache.items.Clear)
+			}
 
 			err := p.Resolve(testutil.ContextWithTimeout(t, defaultTimeout), dctx)
 			require.NoError(t, err)
@@ -1355,7 +1360,8 @@ func TestProxy_Resolve_withOptimisticResolver(t *testing.T) {
 		EnableLRU: true,
 	})
 	items.Set(key, data)
-	p.cache.items = items
+	baseCache := getBaseCache(p.cache)
+	baseCache.items = items
 
 	ctx := testutil.ContextWithTimeout(t, defaultTimeout)
 
@@ -1379,8 +1385,8 @@ func TestProxy_Resolve_withOptimisticResolver(t *testing.T) {
 	<-out
 
 	// Should be served from cache.
-	data = p.cache.items.Get(msgToKey(firstCtx.Req))
-	unpacked, expired := p.cache.unpackItem(data, firstCtx.Req)
+	data = baseCache.items.Get(msgToKey(firstCtx.Req))
+	unpacked, expired := baseCache.unpackItem(data, firstCtx.Req)
 	require.False(t, expired)
 	require.NotNil(t, unpacked)
 	require.Len(t, unpacked.m.Answer, 1)
