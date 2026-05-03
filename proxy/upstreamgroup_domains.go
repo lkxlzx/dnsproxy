@@ -489,6 +489,14 @@ func LoadDomainsFromConfig(
 	result := make(map[string]string)
 
 	for key, value := range domainGroups {
+		// Parse key format: could be "name", "id", or "name/id"
+		// Extract the group reference (prefer ID if present)
+		groupRef := parseGroupReference(key)
+		
+		logger.Debug("processing domain group",
+			"key", key,
+			"groupRef", groupRef)
+
 		// Handle different value types
 		switch v := value.(type) {
 		case string:
@@ -496,33 +504,35 @@ func LoadDomainsFromConfig(
 			// Check if value is a file/URL (then key is group name)
 			// Otherwise it's domain->group mapping
 			if isFileOrURLSource(v) {
-				// key is group name, value is file/URL
-				if err := loadDomainsFromSource(v, key, loader, result, logger); err != nil {
+				// key is group name/id, value is file/URL
+				if err := loadDomainsFromSource(v, groupRef, loader, result, logger); err != nil {
 					return nil, err
 				}
 			} else {
-				// key is domain pattern, value is group name
-				result[key] = v
+				// key is domain pattern, value is group name/id
+				// Parse the value as well (it might be "name/id" format)
+				valueRef := parseGroupReference(v)
+				result[key] = valueRef
 			}
 
 		case []interface{}:
-			// Array format: key is group name, values are sources
+			// Array format: key is group name, values are sources or domains
 			for i, item := range v {
 				switch itemVal := item.(type) {
 				case string:
 					// String in array
 					if isFileOrURLSource(itemVal) {
-						if err := loadDomainsFromSource(itemVal, key, loader, result, logger); err != nil {
+						if err := loadDomainsFromSource(itemVal, groupRef, loader, result, logger); err != nil {
 							return nil, fmt.Errorf("processing array item %d: %w", i, err)
 						}
 					} else {
 						// Direct domain mapping
-						result[itemVal] = key
+						result[itemVal] = groupRef
 					}
 
 				case map[string]interface{}:
 					// Object in array with refresh_interval
-					if err := processObjectSource(itemVal, key, loader, result, manager, logger); err != nil {
+					if err := processObjectSource(itemVal, groupRef, loader, result, manager, logger); err != nil {
 						return nil, fmt.Errorf("processing array item %d: %w", i, err)
 					}
 
@@ -532,9 +542,18 @@ func LoadDomainsFromConfig(
 			}
 
 		case map[string]interface{}:
-			// Single object format: key is group name
-			if err := processObjectSource(v, key, loader, result, manager, logger); err != nil {
-				return nil, err
+			// Object format: could have "domains" field (AdGuard Home format)
+			// or be a source object with refresh_interval
+			if domainsVal, hasDomains := v["domains"]; hasDomains {
+				// AdGuard Home format: { domains: [...] }
+				if err := processDomainsField(domainsVal, groupRef, loader, result, manager, logger); err != nil {
+					return nil, fmt.Errorf("processing domains field for %q: %w", key, err)
+				}
+			} else {
+				// Single object format with source/refresh_interval
+				if err := processObjectSource(v, groupRef, loader, result, manager, logger); err != nil {
+					return nil, err
+				}
 			}
 
 		default:
@@ -543,6 +562,56 @@ func LoadDomainsFromConfig(
 	}
 
 	return result, nil
+}
+
+// parseGroupReference extracts group reference from key.
+// The key can be a group name or ID directly.
+func parseGroupReference(key string) string {
+	// Simply return the key as-is
+	// It will be resolved to a name later using the idToName map
+	return key
+}
+
+// processDomainsField processes the "domains" field from AdGuard Home format.
+func processDomainsField(
+	domainsVal interface{},
+	groupRef string,
+	loader *DomainFileLoader,
+	result map[string]string,
+	manager *DomainListManager,
+	logger *slog.Logger,
+) error {
+	switch domains := domainsVal.(type) {
+	case []interface{}:
+		// Array of domains or sources
+		for i, item := range domains {
+			switch itemVal := item.(type) {
+			case string:
+				if isFileOrURLSource(itemVal) {
+					// Load from file/URL
+					if err := loadDomainsFromSource(itemVal, groupRef, loader, result, logger); err != nil {
+						return fmt.Errorf("loading domain source at index %d: %w", i, err)
+					}
+				} else {
+					// Direct domain mapping
+					result[itemVal] = groupRef
+				}
+			
+			case map[string]interface{}:
+				// Object with source and refresh_interval
+				if err := processObjectSource(itemVal, groupRef, loader, result, manager, logger); err != nil {
+					return fmt.Errorf("processing domain object at index %d: %w", i, err)
+				}
+			
+			default:
+				return fmt.Errorf("unsupported domain item type at index %d", i)
+			}
+		}
+		return nil
+	
+	default:
+		return fmt.Errorf("domains field must be an array")
+	}
 }
 
 // loadDomainsFromSource loads domains from a file or URL and maps them to a group.

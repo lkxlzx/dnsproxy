@@ -127,7 +127,8 @@ func ParseUpstreamGroups(
 	ugc = NewUpstreamGroupConfig()
 	ugc.DefaultGroup = spec.DefaultGroup
 
-	// Parse each group
+	// Parse each group and build ID-to-Name mapping
+	idToName := make(map[string]string)
 	for i, groupSpec := range spec.Groups {
 		group, parseErr := parseUpstreamGroup(&groupSpec, opts)
 		if parseErr != nil {
@@ -136,6 +137,21 @@ func ParseUpstreamGroups(
 
 		if addErr := ugc.AddGroup(group); addErr != nil {
 			return nil, fmt.Errorf("adding group %q: %w", group.Name, addErr)
+		}
+
+		// Build ID-to-Name mapping
+		if group.ID != "" {
+			idToName[group.ID] = group.Name
+		}
+	}
+
+	// Resolve default_group: if it's an ID, convert to name
+	if ugc.DefaultGroup != "" {
+		if groupName, isID := idToName[ugc.DefaultGroup]; isID {
+			opts.Logger.Info("resolved default_group ID to name",
+				"id", ugc.DefaultGroup,
+				"name", groupName)
+			ugc.DefaultGroup = groupName
 		}
 	}
 
@@ -151,7 +167,7 @@ func ParseUpstreamGroups(
 
 	// Process domains_lists first (if exists)
 	if len(spec.DomainLists) > 0 {
-		if err := processDomainLists(spec.DomainLists, manager, ugc, opts.Logger); err != nil {
+		if err := processDomainLists(spec.DomainLists, manager, ugc, idToName, opts.Logger); err != nil {
 			return nil, fmt.Errorf("processing domain lists: %w", err)
 		}
 	}
@@ -162,8 +178,14 @@ func ParseUpstreamGroups(
 		return nil, fmt.Errorf("loading domain files: %w", err)
 	}
 
-	// Set domain-group mappings
-	for domain, groupName := range expandedDomainGroups {
+	// Set domain-group mappings (resolve IDs to names)
+	for domain, groupRef := range expandedDomainGroups {
+		// Check if groupRef is an ID, if so convert to name
+		groupName := groupRef
+		if resolvedName, isID := idToName[groupRef]; isID {
+			groupName = resolvedName
+		}
+		
 		if setErr := ugc.SetDomainGroup(domain, groupName); setErr != nil {
 			return nil, fmt.Errorf("setting domain group for %q: %w", domain, setErr)
 		}
@@ -207,6 +229,7 @@ func processDomainLists(
 	lists []DomainListSpec,
 	manager *DomainListManager,
 	ugc *UpstreamGroupConfig,
+	idToName map[string]string,
 	logger *slog.Logger,
 ) error {
 	loader := NewDomainFileLoader(logger)
@@ -226,10 +249,21 @@ func processDomainLists(
 			return fmt.Errorf("domain list at index %d: missing group", i)
 		}
 
+		// Resolve group reference (could be ID or name)
+		groupRef := listSpec.Group
+		groupName := groupRef
+		if resolvedName, isID := idToName[groupRef]; isID {
+			groupName = resolvedName
+			logger.Info("resolved group ID to name",
+				"list", listSpec.Name,
+				"id", groupRef,
+				"name", groupName)
+		}
+
 		logger.Info("loading domain list",
 			"name", listSpec.Name,
 			"source", listSpec.Source,
-			"group", listSpec.Group)
+			"group", groupName)
 
 		// Load domains
 		domains, err := loader.LoadDomains(listSpec.Source)
@@ -246,17 +280,17 @@ func processDomainLists(
 			}
 		}
 
-		// Add domains to configuration
+		// Add domains to configuration (use resolved group name)
 		for _, domain := range domains {
-			if setErr := ugc.SetDomainGroup(domain, listSpec.Group); setErr != nil {
-				return fmt.Errorf("setting domain %q to group %q: %w", domain, listSpec.Group, setErr)
+			if setErr := ugc.SetDomainGroup(domain, groupName); setErr != nil {
+				return fmt.Errorf("setting domain %q to group %q: %w", domain, groupName, setErr)
 			}
 		}
 
 		logger.Info("loaded domain list",
 			"name", listSpec.Name,
 			"domains", len(domains),
-			"group", listSpec.Group)
+			"group", groupName)
 
 		// Register with manager if provided
 		if manager != nil && listSpec.AutoUpdate {

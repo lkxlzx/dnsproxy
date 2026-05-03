@@ -1,0 +1,87 @@
+dns:
+  bind_hosts:
+    - 0.0.0.0
+  port: 53
+  anonymize_client_ip: false
+  ratelimit: 20
+  ratelimit_subnet_len_ipv4: 24
+  ratelimit_subnet_len_ipv6: 56
+  ratelimit_whitelist: []
+  refuse_any: true
+  upstream_dns:
+    - https://dns10.quad9.net/dns-query
+
+upstream_groups:
+  - id: baf42657-598c-4f35-9185-36b9706785d0
+    name: overseas
+    enabled: true
+    upstreams:
+      - https://dns.cloudflare.com/dns-query
+      - https://dns.google/dns-query
+    mode: load_balance
+    timeout: 10s
+  
+  - id: dd1c17fb-9196-409e-b350-82c829c39d7a
+    name: 国内
+    enabled: true
+    upstreams:
+      - 119.6.6.6
+      - 223.5.5.5
+    mode: load_balance
+    timeout: 10s
+  
+  - id: 1376532a-a05d-46ed-a8df-8fefc123d7c4
+    name: 默认
+    enabled: true
+    upstreams:
+      - 114.114.114.114
+    mode: load_balance
+    timeout: 10s
+
+# 使用 ID 作为键
+domain_groups:
+  dd1c17fb-9196-409e-b350-82c829c39d7a:
+    domains:
+      - baidu.com
+      - taobao.com
+      - qq.com
+      - weixin.qq.com
+      - '*.cn'
+      - '*.com.cn'
+  
+  baf42657-598c-4f35-9185-36b9706785d0:
+    domains:
+      - google.com
+      - '*.google.com'
+      - youtube.com
+      - '*.youtube.com'
+
+domains_lists:
+  - name: china-domains
+    source: https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf
+    group: dd1c17fb-9196-409e-b350-82c829c39d7a
+    file: ./cache/china-domains.yaml
+    auto_update: true
+    refresh_interval: 6h
+    enabled: true
+    format: dnsmasq
+  
+  - name: gfwlist
+    source: https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt
+    group: baf42657-598c-4f35-9185-36b9706785d0
+    file: ./cache/gfwlist.yaml
+    auto_update: true
+    refresh_interval: 24h
+    enabled: true
+    format: gfwlist
+
+default_group: 1376532a-a05d-46ed-a8df-8fefc123d7c4
+
+cache:
+  enabled: true
+  directory: ./cache
+  ttl: 24h
+  default_refresh_interval: 24h
+  auto_update: true
+  max_size: 100MB
+  cleanup_interval: 1h
