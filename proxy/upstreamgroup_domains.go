@@ -465,9 +465,21 @@ func isFileOrURLSource(s string) bool {
 
 // LoadDomainsFromConfig loads domains from domain_groups configuration.
 // It processes file references and expands them into domain lists.
+// Supports both simple string format and object format with refresh_interval.
+//
+// Configuration format:
+//   domain_groups:
+//     "*.google.com": "overseas"           # domain pattern -> group name
+//     "china": "./domains/china.txt"       # group name -> file path
+//     "overseas":                          # group name -> array of sources
+//       - "google.com"
+//       - source: "https://example.com/list.txt"
+//         refresh_interval: "6h"
+//         enabled: true
 func LoadDomainsFromConfig(
-	domainGroups map[string]string,
+	domainGroups map[string]interface{},
 	logger *slog.Logger,
+	manager *DomainListManager,
 ) (map[string]string, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -476,39 +488,199 @@ func LoadDomainsFromConfig(
 	loader := NewDomainFileLoader(logger)
 	result := make(map[string]string)
 
-	for pattern, groupOrFile := range domainGroups {
-		// Check if it's a file reference or URL
-		if isFileOrURLSource(groupOrFile) {
-			
-			logger.Info("loading domains from file", "pattern", pattern, "source", groupOrFile)
-
-			// Load domains from file
-			domains, err := loader.LoadDomains(groupOrFile)
-			if err != nil {
-				logger.Error("failed to load domains", "source", groupOrFile, "error", err)
-				return nil, fmt.Errorf("load domains from %q: %w", groupOrFile, err)
+	for key, value := range domainGroups {
+		// Handle different value types
+		switch v := value.(type) {
+		case string:
+			// Simple string format: could be domain->group or group->file
+			// Check if value is a file/URL (then key is group name)
+			// Otherwise it's domain->group mapping
+			if isFileOrURLSource(v) {
+				// key is group name, value is file/URL
+				if err := loadDomainsFromSource(v, key, loader, result, logger); err != nil {
+					return nil, err
+				}
+			} else {
+				// key is domain pattern, value is group name
+				result[key] = v
 			}
 
-			// Use the pattern as the group name directly
-			// The pattern can be any string, not limited to "file.xxx" format
-			groupName := pattern
+		case []interface{}:
+			// Array format: key is group name, values are sources
+			for i, item := range v {
+				switch itemVal := item.(type) {
+				case string:
+					// String in array
+					if isFileOrURLSource(itemVal) {
+						if err := loadDomainsFromSource(itemVal, key, loader, result, logger); err != nil {
+							return nil, fmt.Errorf("processing array item %d: %w", i, err)
+						}
+					} else {
+						// Direct domain mapping
+						result[itemVal] = key
+					}
 
-			// Add all loaded domains to result
-			for _, domain := range domains {
-				result[domain] = groupName
+				case map[string]interface{}:
+					// Object in array with refresh_interval
+					if err := processObjectSource(itemVal, key, loader, result, manager, logger); err != nil {
+						return nil, fmt.Errorf("processing array item %d: %w", i, err)
+					}
+
+				default:
+					return nil, fmt.Errorf("unsupported array item type for group %q at index %d", key, i)
+				}
 			}
 
-			logger.Info("domains loaded from file", 
-				"source", groupOrFile, 
-				"group", groupName, 
-				"count", len(domains))
-		} else {
-			// Regular domain -> group mapping
-			result[pattern] = groupOrFile
+		case map[string]interface{}:
+			// Single object format: key is group name
+			if err := processObjectSource(v, key, loader, result, manager, logger); err != nil {
+				return nil, err
+			}
+
+		default:
+			return nil, fmt.Errorf("unsupported value type for group %q", key)
 		}
 	}
 
 	return result, nil
+}
+
+// loadDomainsFromSource loads domains from a file or URL and maps them to a group.
+func loadDomainsFromSource(
+	source string,
+	groupName string,
+	loader *DomainFileLoader,
+	result map[string]string,
+	logger *slog.Logger,
+) error {
+	logger.Info("loading domains from file", "group", groupName, "source", source)
+
+	// Load domains from file
+	domains, err := loader.LoadDomains(source)
+	if err != nil {
+		logger.Error("failed to load domains", "source", source, "error", err)
+		return fmt.Errorf("load domains from %q: %w", source, err)
+	}
+
+	// Add all loaded domains to result
+	for _, domain := range domains {
+		result[domain] = groupName
+	}
+
+	logger.Info("domains loaded from file",
+		"source", source,
+		"group", groupName,
+		"count", len(domains))
+
+	return nil
+}
+
+// processObjectSource processes an object source with custom refresh_interval.
+func processObjectSource(
+	obj map[string]interface{},
+	groupName string,
+	loader *DomainFileLoader,
+	result map[string]string,
+	manager *DomainListManager,
+	logger *slog.Logger,
+) error {
+	// Extract source
+	sourceVal, ok := obj["source"]
+	if !ok {
+		return fmt.Errorf("missing 'source' field in object for group %q", groupName)
+	}
+
+	source, ok := sourceVal.(string)
+	if !ok {
+		return fmt.Errorf("'source' must be a string for group %q", groupName)
+	}
+
+	// Extract enabled (default: true)
+	enabled := true
+	if enabledVal, ok := obj["enabled"]; ok {
+		if enabledBool, ok := enabledVal.(bool); ok {
+			enabled = enabledBool
+		}
+	}
+
+	// Skip if disabled
+	if !enabled {
+		logger.Info("skipping disabled source", "group", groupName, "source", source)
+		return nil
+	}
+
+	// Extract refresh_interval (optional)
+	var refreshInterval time.Duration
+	if intervalVal, ok := obj["refresh_interval"]; ok {
+		if intervalStr, ok := intervalVal.(string); ok {
+			var err error
+			refreshInterval, err = time.ParseDuration(intervalStr)
+			if err != nil {
+				return fmt.Errorf("invalid refresh_interval for group %q: %w", groupName, err)
+			}
+		}
+	}
+
+	logger.Info("loading domains from source with custom interval",
+		"group", groupName,
+		"source", source,
+		"refresh_interval", refreshInterval)
+
+	// Load domains
+	domains, err := loader.LoadDomains(source)
+	if err != nil {
+		logger.Error("failed to load domains", "source", source, "error", err)
+		return fmt.Errorf("load domains from %q: %w", source, err)
+	}
+
+	// Add all loaded domains to result
+	for _, domain := range domains {
+		result[domain] = groupName
+	}
+
+	// Register with manager if provided
+	if manager != nil {
+		managedList := &ManagedList{
+			Name:            fmt.Sprintf("%s_%s", groupName, hashSource(source)),
+			Source:          source,
+			Group:           groupName,
+			Enabled:         enabled,
+			LastUpdate:      time.Now(),
+			DomainCount:     len(domains),
+			AutoUpdate:      true,
+			RefreshInterval: refreshInterval,
+		}
+
+		if err := manager.AddList(managedList); err != nil {
+			// Log but don't fail - list might already exist
+			logger.Warn("failed to add managed list", "name", managedList.Name, "error", err)
+		}
+	}
+
+	logger.Info("domains loaded from source",
+		"source", source,
+		"group", groupName,
+		"count", len(domains),
+		"refresh_interval", refreshInterval)
+
+	return nil
+}
+
+// hashSource creates a simple hash of the source URL for unique naming.
+func hashSource(source string) string {
+	// Simple hash: take last part of URL or first 8 chars
+	parts := strings.Split(source, "/")
+	if len(parts) > 0 {
+		last := parts[len(parts)-1]
+		if len(last) > 8 {
+			return last[:8]
+		}
+		return last
+	}
+	if len(source) > 8 {
+		return source[:8]
+	}
+	return source
 }
 
 

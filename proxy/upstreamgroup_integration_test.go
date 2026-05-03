@@ -38,7 +38,7 @@ func TestUpstreamGroupIntegration(t *testing.T) {
 				Enabled: true,
 			},
 		},
-		DomainGroups: map[string]string{
+		DomainGroups: map[string]interface{}{
 			// Overseas domains
 			"google.com":      "overseas",
 			"*.google.com":    "overseas",
@@ -223,7 +223,7 @@ func TestUpstreamGroupDNSQuery(t *testing.T) {
 				Enabled: true,
 			},
 		},
-		DomainGroups: map[string]string{
+		DomainGroups: map[string]interface{}{
 			"google.com":   "overseas",
 			"*.google.com": "overseas",
 			"baidu.com":    "china",

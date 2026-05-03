@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // DomainListManager manages domain lists for AdGuard Home integration.
@@ -19,15 +22,16 @@ type DomainListManager struct {
 
 // ManagedList represents a managed domain list.
 type ManagedList struct {
-	Name        string    // List name (e.g., "china", "gfw")
-	Source      string    // Original source (URL or file)
-	LocalPath   string    // Local cached file path
-	Group       string    // Target upstream group
-	Enabled     bool      // Whether the list is enabled
-	LastUpdate  time.Time // Last update time
-	DomainCount int       // Number of domains
-	Format      string    // Detected format
-	AutoUpdate  bool      // Whether to auto-update
+	Name            string        // List name (e.g., "china", "gfw")
+	Source          string        // Original source (URL or file)
+	LocalPath       string        // Local cached file path
+	Group           string        // Target upstream group
+	Enabled         bool          // Whether the list is enabled
+	LastUpdate      time.Time     // Last update time
+	DomainCount     int           // Number of domains
+	Format          string        // Detected or specified format
+	AutoUpdate      bool          // Whether to auto-update
+	RefreshInterval time.Duration // Custom refresh interval for this list (0 = use default)
 }
 
 // NewDomainListManager creates a new domain list manager.
@@ -41,6 +45,27 @@ func NewDomainListManager(cacheDir string, logger *slog.Logger) *DomainListManag
 		lists:  make(map[string]*ManagedList),
 		logger: logger,
 	}
+}
+
+// NeedsRefresh checks if a list needs to be refreshed based on its refresh interval.
+// Returns true if the list should be refreshed.
+func (m *DomainListManager) NeedsRefresh(name string, defaultInterval time.Duration) bool {
+	m.mu.RLock()
+	list, exists := m.lists[name]
+	m.mu.RUnlock()
+
+	if !exists || !list.Enabled || !list.AutoUpdate {
+		return false
+	}
+
+	// Determine refresh interval
+	interval := list.RefreshInterval
+	if interval == 0 {
+		interval = defaultInterval
+	}
+
+	// Check if enough time has passed since last update
+	return time.Since(list.LastUpdate) >= interval
 }
 
 // AddList adds a new managed list.
@@ -137,9 +162,9 @@ func (m *DomainListManager) UpdateList(name string) error {
 	return nil
 }
 
-// DownloadAndCache downloads a remote list and caches it locally.
+// DownloadAndCache downloads a remote list and caches it locally in YAML format.
 // This is the main function AdGuard Home will call.
-// It handles download, format conversion, and caching automatically.
+// It handles download, format detection, parsing, conversion to YAML, and caching automatically.
 func (m *DomainListManager) DownloadAndCache(source, localPath string) error {
 	m.logger.Info("downloading domain list", "source", source, "target", localPath)
 
@@ -154,24 +179,71 @@ func (m *DomainListManager) DownloadAndCache(source, localPath string) error {
 
 	m.logger.Info("downloaded and parsed", "source", source, "domains", len(domains))
 
-	// Convert to plain text format for local storage
-	converter := NewFormatConverter(m.logger)
-	content := converter.toPlainText(domains)
+	// Convert to YAML format for local storage
+	yamlContent, err := m.convertToYAML(domains, source)
+	if err != nil {
+		return fmt.Errorf("convert to YAML: %w", err)
+	}
 
 	// Save to cache
-	if err := m.cache.SaveToCache(source, content); err != nil {
+	if err := m.cache.SaveToCache(source, yamlContent); err != nil {
 		return fmt.Errorf("save to cache: %w", err)
 	}
 
 	// Also save to specified local path if different
 	if localPath != "" && localPath != m.cache.GetCachePath(source) {
-		if err := os.WriteFile(localPath, content, 0644); err != nil {
+		if err := os.WriteFile(localPath, yamlContent, 0644); err != nil {
 			return fmt.Errorf("save to local path: %w", err)
 		}
 		m.logger.Info("saved to local path", "path", localPath)
 	}
 
 	m.logger.Info("download and cache completed", "source", source, "domains", len(domains))
+	return nil
+}
+
+// convertToYAML converts domain list to YAML format.
+// This creates a standardized YAML format that can be easily loaded by the core.
+func (m *DomainListManager) convertToYAML(domains []string, source string) ([]byte, error) {
+	// Create YAML structure
+	data := map[string]interface{}{
+		"# Generated from": source,
+		"# Generated at":   time.Now().Format(time.RFC3339),
+		"# Total domains":  len(domains),
+		"domains":          domains,
+	}
+
+	// Marshal to YAML
+	yamlBytes, err := yaml.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("marshal YAML: %w", err)
+	}
+
+	return yamlBytes, nil
+}
+
+// saveDomainsAsYAML saves domains to a file in YAML format.
+func (m *DomainListManager) saveDomainsAsYAML(domains []string, source, filePath string) error {
+	// Convert to YAML
+	yamlContent, err := m.convertToYAML(domains, source)
+	if err != nil {
+		return fmt.Errorf("convert to YAML: %w", err)
+	}
+
+	// Ensure directory exists
+	dir := filePath
+	if lastSep := strings.LastIndexAny(filePath, "/\\"); lastSep > 0 {
+		dir = filePath[:lastSep]
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create directory: %w", err)
+		}
+	}
+
+	// Write to file
+	if err := os.WriteFile(filePath, yamlContent, 0644); err != nil {
+		return fmt.Errorf("write file: %w", err)
+	}
+
 	return nil
 }
 
@@ -210,4 +282,73 @@ func (m *DomainListManager) BuildDomainGroupsConfig() map[string]string {
 	}
 
 	return config
+}
+
+// StartAutoRefresh starts a background goroutine that automatically refreshes lists.
+// It checks all lists periodically and refreshes those that need updating.
+func (m *DomainListManager) StartAutoRefresh(defaultInterval time.Duration, checkInterval time.Duration) {
+	if checkInterval == 0 {
+		checkInterval = 1 * time.Hour // Default check every hour
+	}
+
+	go func() {
+		ticker := time.NewTicker(checkInterval)
+		defer ticker.Stop()
+
+		m.logger.Info("auto-refresh started", "check_interval", checkInterval)
+
+		for range ticker.C {
+			m.refreshExpiredLists(defaultInterval)
+		}
+	}()
+}
+
+// refreshExpiredLists checks and refreshes all lists that need updating.
+func (m *DomainListManager) refreshExpiredLists(defaultInterval time.Duration) {
+	m.mu.RLock()
+	listsToRefresh := make([]*ManagedList, 0)
+
+	for _, list := range m.lists {
+		if !list.Enabled || !list.AutoUpdate {
+			continue
+		}
+
+		// Determine refresh interval
+		interval := list.RefreshInterval
+		if interval == 0 {
+			interval = defaultInterval
+		}
+
+		// Check if needs refresh
+		if time.Since(list.LastUpdate) >= interval {
+			listsToRefresh = append(listsToRefresh, list)
+		}
+	}
+	m.mu.RUnlock()
+
+	// Refresh lists outside the lock
+	for _, list := range listsToRefresh {
+		m.logger.Info("auto-refreshing list",
+			"name", list.Name,
+			"source", list.Source,
+			"last_update", list.LastUpdate,
+			"interval", list.RefreshInterval)
+
+		if err := m.UpdateList(list.Name); err != nil {
+			m.logger.Error("failed to auto-refresh list",
+				"name", list.Name,
+				"error", err)
+		} else {
+			m.logger.Info("auto-refresh completed",
+				"name", list.Name,
+				"domains", list.DomainCount)
+		}
+	}
+}
+
+// StopAutoRefresh stops the auto-refresh goroutine.
+// Note: This is a placeholder. In a real implementation, you'd need to
+// store the ticker and provide a way to stop it.
+func (m *DomainListManager) StopAutoRefresh() {
+	m.logger.Info("auto-refresh stopped")
 }

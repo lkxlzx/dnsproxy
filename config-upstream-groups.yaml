@@ -1,0 +1,140 @@
+# AdGuard Home 集成配置示例
+# 这个配置展示了如何将 dnsproxy 的上游分组功能与 AdGuard Home UI 集成
+# ============================================
+
+# ============================================
+# 上游服务器分组配置
+# ============================================
+upstream_groups:
+  # 中国大陆 DNS 组
+  - name: china  # AdGuard Home中分组名称映射而来，分组名称可以是中文
+    upstreams:
+      - 223.5.5.5                    # 阿里 DNS
+      - 119.29.29.29                 # 腾讯 DNS
+      - 114.114.114.114              # 114 DNS
+    mode: load_balance               # 负载均衡模式
+    timeout: 5s
+    enabled: true
+    priority: 0
+
+  # 海外 DNS 组
+  - name: overseas  # AdGuard Home中分组名称映射而来，分组名称可以是中文
+    upstreams:
+      - 8.8.8.8                      # Google DNS
+      - 1.1.1.1                      # Cloudflare DNS
+      - https://dns.google/dns-query # Google DoH
+    mode: parallel                   # 并行查询，选择最快响应
+    timeout: 10s
+    enabled: true
+    priority: 0
+
+  # 广告拦截组（返回空地址）
+  - name: adblock  # AdGuard Home中分组名称映射而来，分组名称可以是中文
+    upstreams:
+      - 127.0.0.1:5353               # 本地拦截服务
+    mode: load_balance
+    timeout: 1s
+    enabled: true
+    priority: 0
+
+  # 安全 DNS 组（使用 DoT/DoH）
+  - name: secure  # AdGuard Home中分组名称映射而来，分组名称可以是中文
+    upstreams:
+      - tls://dns.adguard.com        # AdGuard DoT
+      - https://dns.adguard.com/dns-query  # AdGuard DoH
+    mode: load_balance
+    timeout: 10s
+    enabled: true
+    priority: 0
+
+# 默认上游组（AdGuard Home中勾选了默认分组）
+default_group: overseas  # AdGuard Home中分组名称映射而来，分组名称可以是中文
+
+# ============================================
+# 域名分组配置
+# ============================================
+domain_groups:
+  # 方式 1: 直接指定域名（用于AdGuard Home中添加自定义规则）
+  china:
+    - baidu.com
+    - taobao.com
+    - qq.com
+    - weixin.qq.com
+    - "*.cn"                         # 所有 .cn 域名
+    - "*.com.cn"                     # 所有 .com.cn 域名
+
+  overseas:
+    - google.com
+    - "*.google.com"
+    - youtube.com
+    - "*.youtube.com"
+
+# ============================================
+# 域名列表配置（方式 2: 从远程下载到本地调用）
+# 下载后会自动转换为标准 YAML 格式，核心直接加载 YAML
+# ============================================
+domains_lists:
+  - name: china                      # 列表名称
+    source: https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf
+    group: china                     # 关联到哪个上游组
+    file: ./cache/china-domains.yaml # 本地缓存文件路径（自动转换为 YAML 格式）
+    auto_update: true                # 是否自动更新
+    refresh_interval: 6h             # 每 6 小时刷新一次
+    enabled: true                    # 是否启用
+    format: dnsmasq                  # 源文件格式（可选，用于加速解析）
+
+  - name: gfwlist                    # GFW列表
+    source: https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt
+    group: overseas                  # 关联到海外组
+    file: ./cache/gfwlist.yaml       # 转换为 YAML 格式保存
+    auto_update: true
+    refresh_interval: 24h
+    enabled: true
+    format: gfwlist
+
+  - name: overseas-extra             # 海外域名补充列表
+    source: https://example.com/overseas-domains.txt
+    group: overseas                  # 关联到海外组
+    file: ./cache/overseas-extra.yaml
+    auto_update: true
+    refresh_interval: 168h           # 7 天
+    enabled: true
+
+  - name: adguard-filter             # AdGuard 广告过滤列表
+    source: https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
+    group: adblock                   # 关联到广告拦截组
+    file: ./cache/adguard-filter.yaml
+    auto_update: true
+    refresh_interval: 12h
+    enabled: true
+    format: adblock
+
+  - name: anti-ad                    # Anti-AD 列表
+    source: https://raw.githubusercontent.com/privacy-protection-tools/anti-AD/master/anti-ad-domains.txt
+    group: adblock
+    file: ./cache/anti-ad.yaml
+    auto_update: true
+    refresh_interval: 24h
+    enabled: true
+
+# ============================================
+# 缓存配置
+# ============================================
+cache:
+  enabled: true
+  directory: ./cache                 # 缓存目录
+  ttl: 24h                           # 默认缓存有效期
+  default_refresh_interval: 24h     # 默认刷新间隔（当列表未指定时使用）
+  auto_update: true                  # 全局自动更新开关
+  max_size: 100MB                    # 缓存目录最大大小（可选）
+  cleanup_interval: 1h               # 清理检查间隔（可选）
+
+# ============================================
+# AdGuard Home 集成配置（可选）
+# ============================================
+adguard_home:
+  enabled: false                     # 是否启用 AdGuard Home 集成
+  api_url: http://localhost:3000     # AdGuard Home API 地址
+  username: admin                    # API 用户名
+  password: admin                    # API 密码
+  sync_interval: 5m                  # 与 AdGuard Home 同步间隔

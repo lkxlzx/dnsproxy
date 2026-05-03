@@ -434,13 +434,13 @@ test.local
 	}
 
 	// Test configuration - keys can be any string, not just "file.xxx"
-	domainGroups := map[string]string{
+	domainGroups := map[string]interface{}{
 		"direct.example.com": "direct",           // Direct domain mapping
 		"china":              plainFile,          // Group name as key, file as value
 		"local":              yamlFile,           // Group name as key, file as value
 	}
 
-	result, err := LoadDomainsFromConfig(domainGroups, logger)
+	result, err := LoadDomainsFromConfig(domainGroups, logger, nil)
 	if err != nil {
 		t.Fatalf("LoadDomainsFromConfig failed: %v", err)
 	}

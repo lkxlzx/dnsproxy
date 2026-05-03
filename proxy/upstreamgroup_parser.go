@@ -39,11 +39,68 @@ type UpstreamGroupsSpec struct {
 	// Groups is the list of upstream group specifications.
 	Groups []UpstreamGroupSpec `yaml:"groups"`
 
-	// DomainGroups maps domain patterns to group names.
-	DomainGroups map[string]string `yaml:"domain_groups"`
+	// DomainGroups maps domain patterns to group names or domain source specs.
+	// Supports both simple string format and object format with refresh_interval.
+	DomainGroups map[string]interface{} `yaml:"domain_groups"`
+
+	// DomainLists is the list of remote domain list specifications.
+	DomainLists []DomainListSpec `yaml:"domains_lists"`
 
 	// DefaultGroup is the name of the default group.
 	DefaultGroup string `yaml:"default_group"`
+
+	// Cache configuration
+	Cache *CacheConfigSpec `yaml:"cache"`
+}
+
+// DomainListSpec represents a domain list specification.
+type DomainListSpec struct {
+	// Name is the display name of this list
+	Name string `yaml:"name"`
+
+	// Source is the URL or file path
+	Source string `yaml:"source"`
+
+	// Group is the target upstream group name
+	Group string `yaml:"group"`
+
+	// File is the local cache file path
+	File string `yaml:"file"`
+
+	// AutoUpdate enables automatic updates
+	AutoUpdate bool `yaml:"auto_update"`
+
+	// RefreshInterval is the refresh interval
+	RefreshInterval string `yaml:"refresh_interval"`
+
+	// Enabled indicates whether this list is active
+	Enabled bool `yaml:"enabled"`
+
+	// Format specifies the file format (optional, for faster parsing)
+	Format string `yaml:"format"`
+}
+
+// CacheConfigSpec represents cache configuration.
+type CacheConfigSpec struct {
+	Enabled                bool   `yaml:"enabled"`
+	Directory              string `yaml:"directory"`
+	TTL                    string `yaml:"ttl"`
+	DefaultRefreshInterval string `yaml:"default_refresh_interval"`
+	AutoUpdate             bool   `yaml:"auto_update"`
+	MaxSize                string `yaml:"max_size"`
+	CleanupInterval        string `yaml:"cleanup_interval"`
+}
+
+// DomainSourceSpec represents a domain source with custom refresh interval.
+type DomainSourceSpec struct {
+	// Source is the URL or file path
+	Source string `yaml:"source"`
+
+	// RefreshInterval is the custom refresh interval for this source
+	RefreshInterval string `yaml:"refresh_interval"`
+
+	// Enabled indicates whether this source is active
+	Enabled bool `yaml:"enabled"`
 }
 
 // ParseUpstreamGroups parses upstream group specifications and creates an UpstreamGroupConfig.
@@ -78,8 +135,25 @@ func ParseUpstreamGroups(
 		}
 	}
 
-	// Load domains from files if specified
-	expandedDomainGroups, err := LoadDomainsFromConfig(spec.DomainGroups, opts.Logger)
+	// Initialize domain list manager if needed
+	var manager *DomainListManager
+	if spec.Cache != nil && spec.Cache.Enabled {
+		cacheDir := spec.Cache.Directory
+		if cacheDir == "" {
+			cacheDir = "./cache"
+		}
+		manager = NewDomainListManager(cacheDir, opts.Logger)
+	}
+
+	// Process domains_lists first (if exists)
+	if len(spec.DomainLists) > 0 {
+		if err := processDomainLists(spec.DomainLists, manager, ugc, opts.Logger); err != nil {
+			return nil, fmt.Errorf("processing domain lists: %w", err)
+		}
+	}
+
+	// Load domains from domain_groups configuration
+	expandedDomainGroups, err := LoadDomainsFromConfig(spec.DomainGroups, opts.Logger, manager)
 	if err != nil {
 		return nil, fmt.Errorf("loading domain files: %w", err)
 	}
@@ -99,7 +173,118 @@ func ParseUpstreamGroups(
 	// Rebuild trie for optimized domain matching
 	ugc.RebuildTrie()
 
+	// Start auto-refresh if enabled
+	if manager != nil && spec.Cache != nil && spec.Cache.AutoUpdate {
+		defaultInterval := 24 * time.Hour
+		if spec.Cache.DefaultRefreshInterval != "" {
+			if interval, parseErr := time.ParseDuration(spec.Cache.DefaultRefreshInterval); parseErr == nil {
+				defaultInterval = interval
+			}
+		}
+
+		checkInterval := 1 * time.Hour
+		if spec.Cache.CleanupInterval != "" {
+			if interval, parseErr := time.ParseDuration(spec.Cache.CleanupInterval); parseErr == nil {
+				checkInterval = interval
+			}
+		}
+
+		manager.StartAutoRefresh(defaultInterval, checkInterval)
+		opts.Logger.Info("auto-refresh started",
+			"default_interval", defaultInterval,
+			"check_interval", checkInterval)
+	}
+
 	return ugc, nil
+}
+
+// processDomainLists processes the domains_lists configuration.
+func processDomainLists(
+	lists []DomainListSpec,
+	manager *DomainListManager,
+	ugc *UpstreamGroupConfig,
+	logger *slog.Logger,
+) error {
+	loader := NewDomainFileLoader(logger)
+
+	for i, listSpec := range lists {
+		// Skip if disabled
+		if !listSpec.Enabled {
+			logger.Info("skipping disabled domain list", "name", listSpec.Name)
+			continue
+		}
+
+		// Validate required fields
+		if listSpec.Source == "" {
+			return fmt.Errorf("domain list at index %d: missing source", i)
+		}
+		if listSpec.Group == "" {
+			return fmt.Errorf("domain list at index %d: missing group", i)
+		}
+
+		logger.Info("loading domain list",
+			"name", listSpec.Name,
+			"source", listSpec.Source,
+			"group", listSpec.Group)
+
+		// Load domains
+		domains, err := loader.LoadDomains(listSpec.Source)
+		if err != nil {
+			return fmt.Errorf("loading domain list %q: %w", listSpec.Name, err)
+		}
+
+		// If cache file is specified and manager exists, save as YAML
+		if listSpec.File != "" && manager != nil {
+			if err := manager.saveDomainsAsYAML(domains, listSpec.Source, listSpec.File); err != nil {
+				logger.Warn("failed to save domains as YAML", "file", listSpec.File, "error", err)
+			} else {
+				logger.Info("saved domains as YAML", "file", listSpec.File, "domains", len(domains))
+			}
+		}
+
+		// Add domains to configuration
+		for _, domain := range domains {
+			if setErr := ugc.SetDomainGroup(domain, listSpec.Group); setErr != nil {
+				return fmt.Errorf("setting domain %q to group %q: %w", domain, listSpec.Group, setErr)
+			}
+		}
+
+		logger.Info("loaded domain list",
+			"name", listSpec.Name,
+			"domains", len(domains),
+			"group", listSpec.Group)
+
+		// Register with manager if provided
+		if manager != nil && listSpec.AutoUpdate {
+			var refreshInterval time.Duration
+			if listSpec.RefreshInterval != "" {
+				var parseErr error
+				refreshInterval, parseErr = time.ParseDuration(listSpec.RefreshInterval)
+				if parseErr != nil {
+					return fmt.Errorf("invalid refresh_interval for list %q: %w", listSpec.Name, parseErr)
+				}
+			}
+
+			managedList := &ManagedList{
+				Name:            listSpec.Name,
+				Source:          listSpec.Source,
+				LocalPath:       listSpec.File,
+				Group:           listSpec.Group,
+				Enabled:         listSpec.Enabled,
+				LastUpdate:      time.Now(),
+				DomainCount:     len(domains),
+				AutoUpdate:      listSpec.AutoUpdate,
+				RefreshInterval: refreshInterval,
+				Format:          listSpec.Format,
+			}
+
+			if err := manager.AddList(managedList); err != nil {
+				logger.Warn("failed to add managed list", "name", listSpec.Name, "error", err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // parseUpstreamGroup parses a single upstream group specification.

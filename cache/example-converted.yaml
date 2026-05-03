@@ -1,0 +1,13 @@
+# 这是从远程列表下载并转换后的标准 YAML 格式
+# dnsproxy 核心会直接加载这个格式
+
+# Generated from: https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf
+# Generated at: "2026-05-03T19:00:00+08:00"
+# Total domains: 5
+
+domains:
+  - baidu.com
+  - taobao.com
+  - qq.com
+  - weixin.qq.com
+  - bilibili.com

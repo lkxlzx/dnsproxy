@@ -117,7 +117,7 @@ func TestLocalAndRemoteDomainLoading(t *testing.T) {
 					Enabled: true,
 				},
 			},
-			DomainGroups: map[string]string{
+			DomainGroups: map[string]interface{}{
 				"test.example.com": "overseas",
 				"china":            "../domains/china.txt", // Local file
 			},
@@ -177,7 +177,7 @@ func TestLocalAndRemoteDomainLoading(t *testing.T) {
 					Enabled: true,
 				},
 			},
-			DomainGroups: map[string]string{
+			DomainGroups: map[string]interface{}{
 				"test.example.com": "overseas",
 				"china":            "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMax/ChinaMax_Classical.yaml", // Remote URL
 			},
