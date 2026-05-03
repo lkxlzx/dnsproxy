@@ -10,6 +10,7 @@ it can work as a `DNS-over-HTTPS`, `DNS-over-TLS` or `DNS-over-QUIC` server.
 
 - [How to install](#how-to-install)
 - [How to build](#how-to-build)
+- [Configuration Guide](#configuration-guide)
 - [Usage](#usage)
 - [Examples](#examples)
     - [Simple options](#simple-options)
@@ -42,6 +43,34 @@ You will need Go 1.26 or later.
 ```shell
 make build
 ```
+
+## Configuration Guide
+
+For detailed configuration instructions and examples, see:
+
+- **[Complete Configuration Guide](CONFIG_GUIDE.md)** - Comprehensive guide covering all features
+- **[config-complete-example.yaml](config-complete-example.yaml)** - Full configuration with all options
+- **[config-simple-example.yaml](config-simple-example.yaml)** - Minimal configuration for quick start
+- **[config-adguard-example.yaml](config-adguard-example.yaml)** - AdGuard Home compatible format
+
+### Quick Start with Configuration File
+
+```shell
+# Use a configuration file
+./dnsproxy -c config.yaml
+
+# Or use command-line options
+./dnsproxy -u 8.8.8.8:53
+```
+
+### Key Features (v2.2.1)
+
+- ✅ **Upstream Groups** - Organize DNS servers into groups with ID support
+- ✅ **Domain Routing** - Route domains to specific upstream groups
+- ✅ **AdGuard Home Integration** - Full compatibility with AdGuard Home config format
+- ✅ **Multiple Load Balancing Modes** - load_balance, parallel, fastest_addr
+- ✅ **Domain Lists** - Load domain lists from remote or local files
+- ✅ **Flexible Configuration** - Use IDs or names to reference groups
 
 ## Usage
 

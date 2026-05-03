@@ -1,0 +1,69 @@
+# ============================================
+# DNSProxy 简化配置示例 v2.2.1
+# ============================================
+# 这是一个最小化的配置示例，适合快速开始使用
+# ============================================
+
+# DNS 服务器配置
+dns:
+  bind_hosts:
+    - 0.0.0.0
+  port: 53
+  ratelimit: 20
+  refuse_any: true
+  upstream_dns:
+    - 114.114.114.114
+
+# 上游分组
+upstream_groups:
+  # 国内 DNS
+  - id: dd1c17fb-9196-409e-b350-82c829c39d7a
+    name: 国内
+    enabled: true
+    upstreams:
+      - 223.5.5.5
+      - 119.29.29.29
+    mode: load_balance
+    timeout: 5s
+  
+  # 海外 DNS
+  - id: baf42657-598c-4f35-9185-36b9706785d0
+    name: overseas
+    enabled: true
+    upstreams:
+      - https://dns.google/dns-query
+      - 8.8.8.8
+    mode: parallel
+    timeout: 10s
+  
+  # 默认 DNS
+  - id: 1376532a-a05d-46ed-a8df-8fefc123d7c4
+    name: 默认
+    enabled: true
+    upstreams:
+      - 114.114.114.114
+    mode: load_balance
+    timeout: 10s
+
+# 域名分组（使用 ID）
+domain_groups:
+  dd1c17fb-9196-409e-b350-82c829c39d7a:
+    domains:
+      - baidu.com
+      - taobao.com
+      - "*.cn"
+  
+  baf42657-598c-4f35-9185-36b9706785d0:
+    domains:
+      - google.com
+      - "*.google.com"
+      - youtube.com
+
+# 默认分组
+default_group: 1376532a-a05d-46ed-a8df-8fefc123d7c4
+
+# 缓存配置
+cache:
+  enabled: true
+  directory: ./cache
+  ttl: 24h

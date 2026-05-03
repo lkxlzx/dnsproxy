@@ -1,0 +1,254 @@
+# ============================================
+# DNSProxy 完整配置示例 v2.2.1
+# ============================================
+# 本配置展示了所有可用功能，包括：
+# - 上游分组管理（支持 ID 字段）
+# - 域名路由规则
+# - AdGuard Home 配置格式兼容
+# - 缓存管理
+# - 速率限制
+# ============================================
+
+# ============================================
+# DNS 服务器基础配置
+# ============================================
+dns:
+  # 监听地址
+  bind_hosts:
+    - 0.0.0.0
+    - "::"
+  
+  # 监听端口
+  port: 53
+  
+  # 是否匿名化客户端 IP
+  anonymize_client_ip: false
+  
+  # 速率限制（每秒请求数）
+  ratelimit: 20
+  
+  # IPv4 子网长度（用于速率限制）
+  ratelimit_subnet_len_ipv4: 24
+  
+  # IPv6 子网长度（用于速率限制）
+  ratelimit_subnet_len_ipv6: 56
+  
+  # 速率限制白名单
+  ratelimit_whitelist: []
+  
+  # 是否拒绝 ANY 查询
+  refuse_any: true
+  
+  # 全局上游 DNS（当没有匹配的分组时使用）
+  upstream_dns:
+    - https://dns10.quad9.net/dns-query
+
+# ============================================
+# 上游服务器分组配置
+# ============================================
+upstream_groups:
+  # 中国大陆 DNS 组
+  - id: dd1c17fb-9196-409e-b350-82c829c39d7a
+    name: 国内
+    enabled: true
+    upstreams:
+      - 119.6.6.6                    # 中国电信 DNS
+      - 223.5.5.5                    # 阿里 DNS
+      - 119.29.29.29                 # 腾讯 DNS
+    mode: load_balance               # 负载均衡模式
+    timeout: 5s
+    priority: 0
+  
+  # 海外 DNS 组
+  - id: baf42657-598c-4f35-9185-36b9706785d0
+    name: overseas
+    enabled: true
+    upstreams:
+      - https://dns.cloudflare.com/dns-query  # Cloudflare DoH
+      - https://dns.google/dns-query          # Google DoH
+      - 8.8.8.8                               # Google DNS
+      - 1.1.1.1                               # Cloudflare DNS
+    mode: parallel                   # 并行查询，选择最快响应
+    timeout: 10s
+    priority: 0
+  
+  # 安全 DNS 组（使用 DoT/DoH）
+  - id: 3f8e9a2b-1c4d-5e6f-7a8b-9c0d1e2f3a4b
+    name: secure
+    enabled: true
+    upstreams:
+      - tls://dns.adguard.com                 # AdGuard DoT
+      - https://dns.adguard.com/dns-query     # AdGuard DoH
+      - tls://dns.quad9.net                   # Quad9 DoT
+    mode: load_balance
+    timeout: 10s
+    priority: 0
+  
+  # 广告拦截组（返回空地址）
+  - id: 4a5b6c7d-8e9f-0a1b-2c3d-4e5f6a7b8c9d
+    name: adblock
+    enabled: true
+    upstreams:
+      - 127.0.0.1:5353                        # 本地拦截服务
+    mode: load_balance
+    timeout: 1s
+    priority: 0
+  
+  # 默认上游组
+  - id: 1376532a-a05d-46ed-a8df-8fefc123d7c4
+    name: 默认
+    enabled: true
+    upstreams:
+      - 114.114.114.114                       # 114 DNS
+      - 223.5.5.5                             # 阿里 DNS
+    mode: load_balance
+    timeout: 10s
+    priority: 0
+
+# ============================================
+# 域名分组配置
+# ============================================
+# 支持两种格式：
+# 1. 使用分组名称作为键
+# 2. 使用分组 ID 作为键（AdGuard Home 格式）
+domain_groups:
+  # 方式 1: 使用 ID 作为键（推荐，AdGuard Home 兼容）
+  dd1c17fb-9196-409e-b350-82c829c39d7a:
+    domains:
+      - baidu.com
+      - taobao.com
+      - qq.com
+      - weixin.qq.com
+      - "*.cn"                       # 所有 .cn 域名
+      - "*.com.cn"                   # 所有 .com.cn 域名
+      - alipay.com
+      - jd.com
+      - tmall.com
+  
+  baf42657-598c-4f35-9185-36b9706785d0:
+    domains:
+      - google.com
+      - "*.google.com"
+      - youtube.com
+      - "*.youtube.com"
+      - facebook.com
+      - twitter.com
+      - github.com
+  
+  # 方式 2: 使用分组名称作为键（传统方式）
+  adblock:
+    - "*.ads.com"
+    - "*.doubleclick.net"
+    - "*.googleadservices.com"
+    - ad.example.com
+
+# ============================================
+# 域名列表配置
+# ============================================
+# 从远程或本地文件加载域名列表
+domains_lists:
+  # 中国域名列表
+  - name: china-domains
+    source: https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf
+    group: dd1c17fb-9196-409e-b350-82c829c39d7a  # 使用 ID 引用
+    file: ./cache/china-domains.yaml
+    auto_update: true
+    refresh_interval: 6h
+    enabled: true
+    format: dnsmasq
+  
+  # GFW 列表
+  - name: gfwlist
+    source: https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt
+    group: baf42657-598c-4f35-9185-36b9706785d0  # 使用 ID 引用
+    file: ./cache/gfwlist.yaml
+    auto_update: true
+    refresh_interval: 24h
+    enabled: true
+    format: gfwlist
+  
+  # AdGuard 广告过滤列表
+  - name: adguard-filter
+    source: https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
+    group: adblock                               # 使用名称引用
+    file: ./cache/adguard-filter.yaml
+    auto_update: true
+    refresh_interval: 12h
+    enabled: true
+    format: adblock
+  
+  # Anti-AD 列表
+  - name: anti-ad
+    source: https://raw.githubusercontent.com/privacy-protection-tools/anti-AD/master/anti-ad-domains.txt
+    group: 4a5b6c7d-8e9f-0a1b-2c3d-4e5f6a7b8c9d  # 使用 ID 引用
+    file: ./cache/anti-ad.yaml
+    auto_update: true
+    refresh_interval: 24h
+    enabled: true
+  
+  # 本地自定义列表
+  - name: custom-domains
+    source: ./domains/local.yaml
+    group: 国内                                   # 使用名称引用
+    file: ./cache/custom-domains.yaml
+    auto_update: false
+    enabled: true
+
+# ============================================
+# 默认分组配置
+# ============================================
+# 当域名没有匹配任何规则时使用的分组
+# 支持使用 ID 或名称引用
+default_group: 1376532a-a05d-46ed-a8df-8fefc123d7c4
+
+# ============================================
+# 缓存配置
+# ============================================
+cache:
+  enabled: true
+  directory: ./cache
+  ttl: 24h
+  default_refresh_interval: 24h
+  auto_update: true
+  max_size: 100MB
+  cleanup_interval: 1h
+
+# ============================================
+# 日志配置
+# ============================================
+log:
+  level: info                        # 日志级别: debug, info, warn, error
+  file: ./logs/dnsproxy.log          # 日志文件路径
+  max_size: 100                      # 单个日志文件最大大小（MB）
+  max_backups: 3                     # 保留的旧日志文件数量
+  max_age: 28                        # 保留日志文件的最大天数
+  compress: true                     # 是否压缩旧日志文件
+
+# ============================================
+# 性能配置
+# ============================================
+performance:
+  max_go_routines: 1000              # 最大并发协程数
+  udp_buffer_size: 4096              # UDP 缓冲区大小
+  tcp_buffer_size: 4096              # TCP 缓冲区大小
+
+# ============================================
+# 高级配置
+# ============================================
+advanced:
+  # EDNS 客户端子网
+  edns_client_subnet:
+    enabled: false
+    ipv4_mask: 24
+    ipv6_mask: 56
+  
+  # DNS64 配置
+  dns64:
+    enabled: false
+    prefix: 64:ff9b::/96
+  
+  # 响应过滤
+  filtering:
+    blocked_response_ttl: 3600       # 被拦截域名的 TTL
+    filter_aaaa: false               # 是否过滤 AAAA 记录
+    filter_a: false                  # 是否过滤 A 记录

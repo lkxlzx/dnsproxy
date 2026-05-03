@@ -1,0 +1,114 @@
+# ============================================
+# AdGuard Home 导出格式配置示例 v2.2.1
+# ============================================
+# 这个配置展示了如何使用从 AdGuard Home 导出的配置格式
+# 完全兼容 AdGuard Home 的上游分组配置
+# ============================================
+
+dns:
+  bind_hosts:
+    - 0.0.0.0
+  port: 53
+  anonymize_client_ip: false
+  ratelimit: 20
+  ratelimit_subnet_len_ipv4: 24
+  ratelimit_subnet_len_ipv6: 56
+  ratelimit_whitelist: []
+  refuse_any: true
+  
+  # 全局上游 DNS
+  upstream_dns:
+    - https://dns10.quad9.net/dns-query
+
+# ============================================
+# 上游分组配置（AdGuard Home 格式）
+# ============================================
+upstream_groups:
+  # 海外 DNS 组
+  - id: baf42657-598c-4f35-9185-36b9706785d0
+    name: overseas
+    enabled: true
+    upstreams:
+      - https://dns.cloudflare.com/dns-query
+      - https://dns.google/dns-query
+    mode: load_balance
+    timeout: 10s
+  
+  # 国内 DNS 组
+  - id: dd1c17fb-9196-409e-b350-82c829c39d7a
+    name: 国内
+    enabled: true
+    upstreams:
+      - 119.6.6.6
+      - 223.5.5.5
+    mode: load_balance
+    timeout: 10s
+  
+  # 默认 DNS 组
+  - id: 1376532a-a05d-46ed-a8df-8fefc123d7c4
+    name: 默认
+    enabled: true
+    upstreams:
+      - 114.114.114.114
+    mode: load_balance
+    timeout: 10s
+
+# ============================================
+# 域名分组配置（AdGuard Home 格式）
+# ============================================
+# 使用 ID 作为键，支持嵌套的 domains 字段
+domain_groups:
+  # 国内域名（使用 ID）
+  dd1c17fb-9196-409e-b350-82c829c39d7a:
+    domains:
+      - baidu.com
+      - taobao.com
+      - qq.com
+      - weixin.qq.com
+      - "*.cn"
+      - "*.com.cn"
+  
+  # 海外域名（使用 ID）
+  baf42657-598c-4f35-9185-36b9706785d0:
+    domains:
+      - google.com
+      - "*.google.com"
+      - youtube.com
+      - "*.youtube.com"
+
+# ============================================
+# 域名列表配置（使用 ID 引用分组）
+# ============================================
+domains_lists:
+  # 中国域名列表
+  - name: china-domains
+    source: https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf
+    group: dd1c17fb-9196-409e-b350-82c829c39d7a
+    file: ./cache/china-domains.yaml
+    auto_update: true
+    refresh_interval: 6h
+    enabled: true
+    format: dnsmasq
+  
+  # GFW 列表
+  - name: gfwlist
+    source: https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt
+    group: baf42657-598c-4f35-9185-36b9706785d0
+    file: ./cache/gfwlist.yaml
+    auto_update: true
+    refresh_interval: 24h
+    enabled: true
+    format: gfwlist
+
+# 默认分组（使用 ID）
+default_group: 1376532a-a05d-46ed-a8df-8fefc123d7c4
+
+# 缓存配置
+cache:
+  enabled: true
+  directory: ./cache
+  ttl: 24h
+  default_refresh_interval: 24h
+  auto_update: true
+  max_size: 100MB
+  cleanup_interval: 1h
