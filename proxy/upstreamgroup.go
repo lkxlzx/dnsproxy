@@ -13,7 +13,11 @@ import (
 
 // UpstreamGroup represents a group of upstream servers with shared configuration.
 type UpstreamGroup struct {
-	// Name is the unique identifier for this group.
+	// ID is the unique identifier for this group (UUID format recommended).
+	// Used for integration with external systems like AdGuard Home.
+	ID string
+
+	// Name is the human-readable name for this group.
 	Name string
 
 	// Upstreams is the list of upstream servers in this group.

@@ -12,7 +12,11 @@ import (
 
 // UpstreamGroupSpec represents the specification for an upstream group from configuration.
 type UpstreamGroupSpec struct {
-	// Name is the unique identifier for this group.
+	// ID is the unique identifier for this group (UUID format recommended).
+	// Used for integration with external systems like AdGuard Home.
+	ID string `yaml:"id"`
+
+	// Name is the human-readable name for this group.
 	Name string `yaml:"name"`
 
 	// Upstreams is the list of upstream server addresses.
@@ -301,6 +305,7 @@ func parseUpstreamGroup(
 	}
 
 	group = &UpstreamGroup{
+		ID:         spec.ID,
 		Name:       spec.Name,
 		MaxRetries: spec.MaxRetries,
 		Enabled:    spec.Enabled,
