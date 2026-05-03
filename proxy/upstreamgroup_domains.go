@@ -263,14 +263,14 @@ func (dfl *DomainFileLoader) parseClashRule(rule string) string {
 
 	switch ruleType {
 	case "DOMAIN":
-		// Exact domain match
-		return domain + "."
+		// Exact domain match (no trailing dot)
+		return domain
 	case "DOMAIN-SUFFIX":
-		// Suffix match (wildcard)
-		return "*." + domain + "."
+		// Suffix match (wildcard, no trailing dot)
+		return "*." + domain
 	case "DOMAIN-KEYWORD":
-		// Keyword match (not directly supported, treat as suffix)
-		return "*" + domain + "*."
+		// Keyword match (not directly supported, treat as suffix, no trailing dot)
+		return "*" + domain + "*"
 	default:
 		// Skip other rule types (IP-CIDR, etc.)
 		return ""
@@ -357,13 +357,9 @@ func (dfl *DomainFileLoader) parseGFWListRule(rule string) string {
 		rule = rule[:idx]
 	}
 
-	// Clean and validate
+	// Clean and validate (no trailing dot)
 	domain := dfl.cleanDomain(rule)
-	if domain != "" {
-		return domain + "."
-	}
-
-	return ""
+	return domain
 }
 
 // isValidIPv4 checks if a string is a valid IPv4 address.
@@ -778,11 +774,11 @@ func (dfl *DomainFileLoader) parseSurge(content []byte) ([]string, error) {
 
 		switch ruleType {
 		case "DOMAIN":
-			domains = append(domains, domain+".")
+			domains = append(domains, domain)
 		case "DOMAIN-SUFFIX":
-			domains = append(domains, "*."+domain+".")
+			domains = append(domains, "*."+domain)
 		case "DOMAIN-KEYWORD":
-			domains = append(domains, "*"+domain+"*.")
+			domains = append(domains, "*"+domain+"*")
 		}
 	}
 
@@ -810,7 +806,7 @@ func (dfl *DomainFileLoader) parseDnsmasq(content []byte) ([]string, error) {
 			if len(parts) >= 2 {
 				domain := parts[1]
 				if domain != "" {
-					domains = append(domains, domain+".")
+					domains = append(domains, domain)
 				}
 			}
 		}
@@ -821,7 +817,7 @@ func (dfl *DomainFileLoader) parseDnsmasq(content []byte) ([]string, error) {
 			if len(parts) >= 2 {
 				domain := parts[1]
 				if domain != "" {
-					domains = append(domains, domain+".")
+					domains = append(domains, domain)
 				}
 			}
 		}
@@ -852,7 +848,7 @@ func (dfl *DomainFileLoader) parseHosts(content []byte) ([]string, error) {
 			for i := 1; i < len(parts); i++ {
 				domain := dfl.cleanDomain(parts[i])
 				if domain != "" {
-					domains = append(domains, domain+".")
+					domains = append(domains, domain)
 				}
 			}
 		}
@@ -915,11 +911,7 @@ func (dfl *DomainFileLoader) parseAdblockRule(rule string) string {
 	}
 
 	domain := dfl.cleanDomain(rule)
-	if domain != "" {
-		return domain + "."
-	}
-
-	return ""
+	return domain
 }
 
 // parseJSON parses JSON format domain lists.
@@ -933,7 +925,7 @@ func (dfl *DomainFileLoader) parseJSON(content []byte) ([]string, error) {
 		for _, domain := range arrayData {
 			cleaned := dfl.cleanDomain(domain)
 			if cleaned != "" {
-				domains = append(domains, cleaned+".")
+				domains = append(domains, cleaned)
 			}
 		}
 		return domains, nil
@@ -948,7 +940,7 @@ func (dfl *DomainFileLoader) parseJSON(content []byte) ([]string, error) {
 					if domain, ok := d.(string); ok {
 						cleaned := dfl.cleanDomain(domain)
 						if cleaned != "" {
-							domains = append(domains, cleaned+".")
+							domains = append(domains, cleaned)
 						}
 					}
 				}

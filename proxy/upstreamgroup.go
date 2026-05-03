@@ -127,6 +127,10 @@ func (ugc *UpstreamGroupConfig) SetDomainGroup(domain, groupName string) error {
 		return fmt.Errorf("group %q does not exist", groupName)
 	}
 
+	// Normalize domain: remove trailing dot and convert to lowercase
+	// This ensures consistent storage format regardless of input format
+	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
+
 	ugc.DomainGroups[domain] = groupName
 	
 	// Update the active data structure
@@ -148,7 +152,8 @@ func (ugc *UpstreamGroupConfig) SetDomainGroup(domain, groupName string) error {
 //   - Trie Tree: O(m) where m is domain length
 func (ugc *UpstreamGroupConfig) GetGroupForDomain(domain string) (*UpstreamGroup, error) {
 	// Normalize domain: remove trailing dot for matching
-	domain = strings.TrimSuffix(domain, ".")
+	// DNS queries use FQDN format (with trailing dot), but we store domains without it
+	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
 	
 	// Try Radix Tree first (if enabled) - fastest option
 	if ugc.useRadix && ugc.domainRadix != nil {
