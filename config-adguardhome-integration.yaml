@@ -1,0 +1,100 @@
+# AdGuard Home 集成配置示例
+# 这个配置展示了如何将 dnsproxy 的上游分组功能与 AdGuard Home UI 集成
+
+# ============================================
+# 上游服务器分组配置
+# ============================================
+upstream_groups:
+  # 中国大陆 DNS 组
+  - name: china
+    upstreams:
+      - 223.5.5.5                    # 阿里 DNS
+      - 119.29.29.29                 # 腾讯 DNS
+      - 114.114.114.114              # 114 DNS
+    mode: load_balance               # 负载均衡模式
+    timeout: 5s
+    enabled: true
+    priority: 0
+
+  # 海外 DNS 组
+  - name: overseas
+    upstreams:
+      - 8.8.8.8                      # Google DNS
+      - 1.1.1.1                      # Cloudflare DNS
+      - https://dns.google/dns-query # Google DoH
+    mode: parallel                   # 并行查询，选择最快响应
+    timeout: 10s
+    enabled: true
+    priority: 0
+
+  # 广告拦截组（返回空地址）
+  - name: adblock
+    upstreams:
+      - 127.0.0.1:5353               # 本地拦截服务
+    mode: load_balance
+    timeout: 1s
+    enabled: true
+    priority: 0
+
+  # 安全 DNS 组（使用 DoT/DoH）
+  - name: secure
+    upstreams:
+      - tls://dns.adguard.com        # AdGuard DoT
+      - https://dns.adguard.com/dns-query  # AdGuard DoH
+    mode: load_balance
+    timeout: 10s
+    enabled: true
+    priority: 0
+
+# ============================================
+# 域名分组配置
+# ============================================
+domain_groups:
+  # 方式 1: 直接指定域名
+  china:
+    - baidu.com
+    - taobao.com
+    - qq.com
+    - weixin.qq.com
+    - *.cn                           # 所有 .cn 域名
+    - *.com.cn                       # 所有 .com.cn 域名
+
+  # 方式 2: 从本地文件加载
+  # 注意：使用组名作为 key，文件路径作为 value
+  china_local:
+    ./domains/china.txt              # 本地中国域名列表
+
+  # 方式 3: 从远程 URL 加载
+  china_remote:
+    https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf
+
+  # 方式 4: 广告拦截列表
+  adblock:
+    - https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
+    - https://raw.githubusercontent.com/privacy-protection-tools/anti-AD/master/anti-ad-domains.txt
+
+  # 方式 5: GFWList（自动检测格式）
+  overseas:
+    - https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt
+
+  # 方式 6: 混合配置
+  secure:
+    - *.bank.com                     # 银行域名
+    - *.gov.cn                       # 政府域名
+    - ./domains/secure.txt           # 本地安全域名列表
+
+# ============================================
+# 默认上游组
+# ============================================
+default_group: overseas              # 未匹配的域名使用海外 DNS
+
+# ============================================
+# 缓存配置（可选）
+# ============================================
+cache:
+  enabled: true
+  directory: ./cache                 # 缓存目录
+  ttl: 24h                          # 缓存有效期
+  auto_update: true                 # 自动更新远程列表
+  update_interval: 12h              # 更新间隔
+

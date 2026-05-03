@@ -1,0 +1,51 @@
+# 远程域名文件加载测试配置
+# 测试从 GitHub 加载真实的域名列表
+
+listen-addrs:
+  - "127.0.0.1"
+listen-ports:
+  - 5302
+cache: true
+verbose: true
+
+upstream-groups:
+  default_group: "overseas"
+  
+  groups:
+    # 海外 DNS 组
+    - name: "overseas"
+      upstreams:
+        - "8.8.8.8"
+        - "1.1.1.1"
+      mode: "load_balance"
+      timeout: "10s"
+    
+    # 中国 DNS 组
+    - name: "china"
+      upstreams:
+        - "223.5.5.5"
+        - "119.29.29.29"
+      mode: "load_balance"
+      timeout: "10s"
+  
+  # 域名分组映射
+  domain_groups:
+    # 方式1: 直接指定（用于测试）
+    "test.example.com": "overseas"
+    
+    # 方式2: 从本地文件加载
+    "local-china": "./domains/china.txt"
+    
+    # 方式3: 从远程 URL 加载（Clash 格式）
+    # 中国域名列表 - 约 10 万个域名
+    "china": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMax/ChinaMax_Classical.yaml"
+    
+    # 方式4: 从远程 URL 加载（GFWList 格式）
+    # GFW 列表 - 被墙域名
+    # "gfw": "https://raw.githubusercontent.com/gfwlist/gfwlist/refs/heads/master/gfwlist.txt"
+
+# 注意：
+# 1. 远程文件加载需要网络连接
+# 2. 首次加载可能需要较长时间
+# 3. 建议启用缓存以提高性能
+# 4. GFWList 较大，可能需要更长加载时间

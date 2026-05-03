@@ -1,0 +1,33 @@
+# 广告域名列表示例
+# 纯文本格式
+
+# 广告服务
+ads.google.com
+doubleclick.net
+*.doubleclick.net
+googlesyndication.com
+*.googlesyndication.com
+googleadservices.com
+*.googleadservices.com
+
+# 追踪服务
+google-analytics.com
+*.google-analytics.com
+googletagmanager.com
+*.googletagmanager.com
+facebook.com/tr
+*.facebook.com/tr
+
+# 广告网络
+adnxs.com
+*.adnxs.com
+advertising.com
+*.advertising.com
+adform.net
+*.adform.net
+
+# 中国广告
+tanx.com
+*.tanx.com
+mmstat.com
+*.mmstat.com

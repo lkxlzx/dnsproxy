@@ -1,0 +1,145 @@
+# DNSProxy 上游分组配置 - 缓存模式示例
+# 展示如何配置远程域名列表的缓存功能
+
+# 上游分组配置
+upstream-groups:
+  # 默认组
+  default_group: "overseas"
+  
+  # 定义上游组
+  groups:
+    # 海外 DNS 组
+    - name: "overseas"
+      mode: "load_balance"
+      upstreams:
+        - "8.8.8.8"
+        - "1.1.1.1"
+      timeout: "3s"
+      enabled: true
+    
+    # 国内 DNS 组
+    - name: "china"
+      mode: "load_balance"
+      upstreams:
+        - "223.5.5.5"
+        - "119.29.29.29"
+      timeout: "3s"
+      enabled: true
+    
+    # 广告拦截组
+    - name: "adblock"
+      mode: "load_balance"
+      upstreams:
+        - "0.0.0.0"
+      enabled: true
+  
+  # 域名分组映射
+  # 支持本地文件和远程 URL
+  domain_groups:
+    # 本地文件（快速，无需下载）
+    "local": "./domains/local.yaml"
+    
+    # 远程 URL（自动下载、缓存）
+    # 这些 URL 会被自动下载、格式转换、缓存到本地
+    "china": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMax/ChinaMax_Classical.yaml"
+    "gfw": "https://raw.githubusercontent.com/gfwlist/gfwlist/refs/heads/master/gfwlist.txt"
+    "ads": "https://raw.githubusercontent.com/AdguardTeam/AdguardFilters/master/ChineseFilter/sections/adservers.txt"
+
+# 域名列表缓存配置
+domain-list-cache:
+  # 是否启用缓存
+  enabled: true
+  
+  # 缓存目录
+  cache_dir: "./cache/domains"
+  
+  # 缓存 TTL（过期时间）
+  # 格式：数字 + 单位（s=秒, m=分钟, h=小时, d=天）
+  ttl: "24h"
+  
+  # 下载失败时是否使用过期缓存
+  fallback_to_stale: true
+  
+  # 自动清理过期缓存的间隔
+  cleanup_interval: "1h"
+  
+  # HTTP 下载超时
+  download_timeout: "30s"
+  
+  # 最大重试次数
+  max_retries: 3
+
+# 域名列表管理配置
+domain-list-manager:
+  # 是否启用管理器
+  enabled: true
+  
+  # 管理的域名列表
+  lists:
+    # 中国域名列表
+    - name: "china"
+      source: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMax/ChinaMax_Classical.yaml"
+      group: "china"
+      enabled: true
+      auto_update: true
+      update_interval: "24h"
+    
+    # GFW 列表
+    - name: "gfw"
+      source: "https://raw.githubusercontent.com/gfwlist/gfwlist/refs/heads/master/gfwlist.txt"
+      group: "overseas"
+      enabled: true
+      auto_update: true
+      update_interval: "24h"
+    
+    # 广告拦截列表
+    - name: "adblock"
+      source: "https://raw.githubusercontent.com/AdguardTeam/AdguardFilters/master/ChineseFilter/sections/adservers.txt"
+      group: "adblock"
+      enabled: true
+      auto_update: true
+      update_interval: "12h"
+    
+    # 本地自定义列表
+    - name: "local"
+      source: "./domains/local.yaml"
+      group: "china"
+      enabled: true
+      auto_update: false
+
+# 监听配置
+listen-addrs:
+  - "127.0.0.1"
+
+listen-ports:
+  - 5301
+
+# 日志配置
+log-level: "info"
+
+# 使用说明：
+# 
+# 1. 首次启动时，dnsproxy 会自动：
+#    - 创建缓存目录 ./cache/domains
+#    - 下载所有远程域名列表
+#    - 检测格式并转换为统一格式
+#    - 保存到缓存（使用 SHA256 哈希命名）
+#
+# 2. 后续启动时：
+#    - 检查缓存是否存在且未过期
+#    - 如果缓存有效，直接使用（快速启动）
+#    - 如果缓存过期，重新下载
+#
+# 3. 自动更新：
+#    - 根据 update_interval 自动更新列表
+#    - 更新成功后自动重载配置
+#    - 更新失败时继续使用旧缓存
+#
+# 4. 缓存文件命名：
+#    - 使用 SHA256(source_url) 作为文件名
+#    - 例如：78adf1c1f8d49f296e39fd58dcb8f6be542aadf80d82a6e5bd9024c62e014b06.cache
+#
+# 5. 手动管理缓存：
+#    - 查看缓存：ls ./cache/domains
+#    - 清理缓存：rm ./cache/domains/*.cache
+#    - 强制更新：删除缓存文件后重启

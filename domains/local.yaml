@@ -1,0 +1,31 @@
+# 本地/内网域名列表示例
+# Clash YAML 格式
+
+payload:
+  # 内网域名 - 精确匹配
+  - DOMAIN,internal.company.com
+  - DOMAIN,intranet.local
+  - DOMAIN,corp.local
+  - DOMAIN,office.local
+  
+  # 内网域名 - 后缀匹配
+  - DOMAIN-SUFFIX,internal.company.com
+  - DOMAIN-SUFFIX,corp.local
+  - DOMAIN-SUFFIX,lan
+  - DOMAIN-SUFFIX,local
+  
+  # 内网服务
+  - DOMAIN,gitlab.internal.company.com
+  - DOMAIN,jenkins.internal.company.com
+  - DOMAIN,wiki.internal.company.com
+  - DOMAIN,jira.internal.company.com
+  
+  # 开发环境
+  - DOMAIN-SUFFIX,dev.local
+  - DOMAIN-SUFFIX,test.local
+  - DOMAIN-SUFFIX,staging.local
+  
+  # 私有云服务
+  - DOMAIN,cloud.internal.company.com
+  - DOMAIN,storage.internal.company.com
+  - DOMAIN,backup.internal.company.com

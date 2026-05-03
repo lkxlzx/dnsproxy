@@ -1,0 +1,51 @@
+# DNSProxy Upstream Groups Configuration (Text Format)
+# This is a simple text-based configuration for upstream groups
+
+# Define groups using: [group:name:mode:timeout]
+# Modes: load_balance, parallel, fastest_addr
+# Timeout: duration like 5s, 10s, 1m
+
+# Primary group - Fast public DNS servers
+[group:primary:load_balance:5s]
+1.1.1.1
+8.8.8.8
+8.8.4.4
+
+# Secure group - Encrypted DNS servers
+[group:secure:parallel:10s]
+tls://dns.adguard.com
+https://dns.google/dns-query
+quic://dns.adguard.com
+
+# Local group - Internal DNS servers
+[group:local:load_balance:3s]
+192.168.1.1:53
+192.168.1.2:53
+
+# Fast group - Optimized for speed
+[group:fast:fastest_addr:5s]
+1.1.1.1
+1.0.0.1
+8.8.8.8
+8.8.4.4
+
+# Backup group - Fallback servers
+[group:backup:load_balance:15s]
+9.9.9.9:53
+149.112.112.112:53
+208.67.222.222:53
+
+# Map domains to groups using: [/domain1/domain2/]groupname
+# Internal domains use local DNS
+[/internal.local/corp.local/]local
+[/intranet/]local
+
+# Sensitive domains use encrypted DNS
+[/banking.com/secure.example.com/]secure
+[/finance.example.com/]secure
+
+# CDN domains use fast group
+[/cdn.example.com/static.example.com/]fast
+
+# Set default group using: [default]groupname
+[default]primary
