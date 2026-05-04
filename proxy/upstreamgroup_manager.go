@@ -34,6 +34,20 @@ type ManagedList struct {
 	RefreshInterval time.Duration // Custom refresh interval for this list (0 = use default)
 }
 
+// GetStats returns statistics for frontend display.
+func (ml *ManagedList) GetStats() map[string]interface{} {
+	return map[string]interface{}{
+		"name":         ml.Name,
+		"source":       ml.Source,
+		"group":        ml.Group,
+		"enabled":      ml.Enabled,
+		"domain_count": ml.DomainCount,
+		"last_updated": ml.LastUpdate.Format(time.RFC3339),
+		"auto_update":  ml.AutoUpdate,
+		"format":       ml.Format,
+	}
+}
+
 // NewDomainListManager creates a new domain list manager.
 func NewDomainListManager(cacheDir string, logger *slog.Logger) *DomainListManager {
 	if logger == nil {
@@ -123,6 +137,19 @@ func (m *DomainListManager) ListAll() []*ManagedList {
 	return lists
 }
 
+// GetAllStats returns statistics for all managed lists (for frontend).
+func (m *DomainListManager) GetAllStats() []map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	stats := make([]map[string]interface{}, 0, len(m.lists))
+	for _, list := range m.lists {
+		stats = append(stats, list.GetStats())
+	}
+
+	return stats
+}
+
 // UpdateList updates a managed list.
 // This is called by AdGuard Home when user clicks "Update" in UI.
 func (m *DomainListManager) UpdateList(name string) error {
@@ -205,12 +232,9 @@ func (m *DomainListManager) DownloadAndCache(source, localPath string) error {
 // convertToYAML converts domain list to YAML format.
 // This creates a standardized YAML format that can be easily loaded by the core.
 func (m *DomainListManager) convertToYAML(domains []string, source string) ([]byte, error) {
-	// Create YAML structure
+	// Create YAML structure (without comments in the map)
 	data := map[string]interface{}{
-		"# Generated from": source,
-		"# Generated at":   time.Now().Format(time.RFC3339),
-		"# Total domains":  len(domains),
-		"domains":          domains,
+		"domains": domains,
 	}
 
 	// Marshal to YAML
@@ -219,7 +243,14 @@ func (m *DomainListManager) convertToYAML(domains []string, source string) ([]by
 		return nil, fmt.Errorf("marshal YAML: %w", err)
 	}
 
-	return yamlBytes, nil
+	// Prepend comments manually
+	header := fmt.Sprintf("# Generated from: %s\n# Generated at: %s\n# Total domains: %d\n\n",
+		source,
+		time.Now().Format(time.RFC3339),
+		len(domains))
+
+	result := append([]byte(header), yamlBytes...)
+	return result, nil
 }
 
 // saveDomainsAsYAML saves domains to a file in YAML format.

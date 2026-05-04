@@ -1,0 +1,10 @@
+# Generated from: https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf
+# Generated at: 2026-05-04T09:26:19+08:00
+# Total domains: 5
+
+domains:
+    - baidu.com
+    - taobao.com
+    - qq.com
+    - weixin.qq.com
+    - alipay.com

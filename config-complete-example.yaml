@@ -146,6 +146,7 @@ domain_groups:
 # 域名列表配置
 # ============================================
 # 从远程或本地文件加载域名列表
+# 注意：file 指定的缓存文件会在首次运行时自动创建
 domains_lists:
   # 中国域名列表
   - name: china-domains
@@ -156,6 +157,8 @@ domains_lists:
     refresh_interval: 6h
     enabled: true
     format: dnsmasq
+    domain_count: 0              # 域名数量（自动更新）
+    last_updated: ""             # 最后更新时间（自动更新）
   
   # GFW 列表
   - name: gfwlist
@@ -166,6 +169,8 @@ domains_lists:
     refresh_interval: 24h
     enabled: true
     format: gfwlist
+    domain_count: 0              # 域名数量（自动更新）
+    last_updated: ""             # 最后更新时间（自动更新）
   
   # AdGuard 广告过滤列表
   - name: adguard-filter
@@ -176,6 +181,8 @@ domains_lists:
     refresh_interval: 12h
     enabled: true
     format: adblock
+    domain_count: 0              # 域名数量（自动更新）
+    last_updated: ""             # 最后更新时间（自动更新）
   
   # Anti-AD 列表
   - name: anti-ad
@@ -185,6 +192,8 @@ domains_lists:
     auto_update: true
     refresh_interval: 24h
     enabled: true
+    domain_count: 0              # 域名数量（自动更新）
+    last_updated: ""             # 最后更新时间（自动更新）
   
   # 本地自定义列表
   - name: custom-domains
@@ -193,6 +202,8 @@ domains_lists:
     file: ./cache/custom-domains.yaml
     auto_update: false
     enabled: true
+    domain_count: 0              # 域名数量（自动更新）
+    last_updated: ""             # 最后更新时间（自动更新）
 
 # ============================================
 # 默认分组配置
@@ -206,7 +217,7 @@ default_group: 1376532a-a05d-46ed-a8df-8fefc123d7c4
 # ============================================
 cache:
   enabled: true
-  directory: ./cache
+  directory: ./cache                 # 缓存目录（首次运行时自动创建）
   ttl: 24h
   default_refresh_interval: 24h
   auto_update: true

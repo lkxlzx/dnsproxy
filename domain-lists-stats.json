@@ -1,0 +1,29 @@
+{
+  "lists": [
+    {
+      "auto_update": true,
+      "domain_count": 114898,
+      "enabled": true,
+      "format": "dnsmasq",
+      "group": "china-id",
+      "last_updated": "2026-05-04T11:19:15+08:00",
+      "name": "china-domains",
+      "refresh_interval": "24h",
+      "source": "https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf"
+    },
+    {
+      "auto_update": true,
+      "domain_count": 4161,
+      "enabled": true,
+      "format": "gfwlist",
+      "group": "overseas-id",
+      "last_updated": "2026-05-04T11:19:15+08:00",
+      "name": "gfwlist",
+      "refresh_interval": "24h",
+      "source": "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
+    }
+  ],
+  "timestamp": "2026-05-04T11:19:16+08:00",
+  "total_domains": 119059,
+  "total_lists": 2
+}

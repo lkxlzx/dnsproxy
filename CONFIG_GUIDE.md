@@ -38,6 +38,11 @@ vim config.yaml
 ./dnsproxy -c config.yaml
 ```
 
+**首次运行说明**：
+- `cache` 目录会自动创建（如果不存在）
+- 域名列表会自动下载并缓存到 `cache` 目录
+- 如果网络不可用，会使用已缓存的文件（如果存在）
+
 ## 📝 配置文件示例
 
 ### 最小配置
@@ -204,12 +209,18 @@ domains_lists:
   - name: china-domains
     source: https://example.com/china-domains.txt
     group: dd1c17fb-9196-409e-b350-82c829c39d7a  # 使用 ID
-    file: ./cache/china-domains.yaml
+    file: ./cache/china-domains.yaml              # 本地缓存路径（自动创建）
     auto_update: true
     refresh_interval: 6h
     enabled: true
     format: dnsmasq
 ```
+
+**工作流程**：
+1. 首次运行时，从 `source` 下载域名列表
+2. 转换为 YAML 格式并保存到 `file` 指定的路径
+3. 后续启动时，如果缓存文件存在且未过期，直接使用缓存
+4. 如果启用 `auto_update`，会在后台定期更新
 
 #### 支持的格式
 
@@ -300,13 +311,18 @@ default_group: baf42657-598c-4f35-9185-36b9706785d0
 ```yaml
 cache:
   enabled: true                      # 启用缓存
-  directory: ./cache                 # 缓存目录
+  directory: ./cache                 # 缓存目录（自动创建）
   ttl: 24h                          # 缓存有效期
   default_refresh_interval: 24h     # 默认刷新间隔
   auto_update: true                 # 自动更新
   max_size: 100MB                   # 最大缓存大小
   cleanup_interval: 1h              # 清理间隔
 ```
+
+**注意**：
+- `cache` 目录会在首次运行时自动创建
+- 域名列表文件会自动下载并缓存到指定的 `file` 路径
+- 如果源文件无法访问，会使用缓存的文件（如果存在）
 
 ### 日志配置
 
@@ -414,6 +430,23 @@ default_group: secure-id
 ```
 
 ## 🔍 故障排查
+
+### 缓存文件问题
+
+**问题**：找不到 cache 文件夹或缓存文件
+
+**解决方案**：
+```bash
+# cache 目录会在首次运行时自动创建
+# 如果需要手动创建：
+mkdir -p cache
+
+# 检查缓存文件
+ls -la cache/
+
+# 清理缓存（如果需要重新下载）
+rm -rf cache/*.yaml
+```
 
 ### 检查配置文件
 

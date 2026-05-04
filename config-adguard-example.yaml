@@ -79,6 +79,7 @@ domain_groups:
 # ============================================
 # 域名列表配置（使用 ID 引用分组）
 # ============================================
+# 注意：file 指定的缓存文件会在首次运行时自动创建
 domains_lists:
   # 中国域名列表
   - name: china-domains
@@ -88,7 +89,9 @@ domains_lists:
     auto_update: true
     refresh_interval: 6h
     enabled: true
-    format: dnsmasq
+    format: auto                 # 自动检测格式（也可以省略此字段）
+    domain_count: 0              # 域名数量（自动更新）
+    last_updated: ""             # 最后更新时间（自动更新）
   
   # GFW 列表
   - name: gfwlist
@@ -98,7 +101,9 @@ domains_lists:
     auto_update: true
     refresh_interval: 24h
     enabled: true
-    format: gfwlist
+    format: auto                 # 自动检测格式
+    domain_count: 0              # 域名数量（自动更新）
+    last_updated: ""             # 最后更新时间（自动更新）
 
 # 默认分组（使用 ID）
 default_group: 1376532a-a05d-46ed-a8df-8fefc123d7c4
@@ -106,7 +111,7 @@ default_group: 1376532a-a05d-46ed-a8df-8fefc123d7c4
 # 缓存配置
 cache:
   enabled: true
-  directory: ./cache
+  directory: ./cache                 # 缓存目录（首次运行时自动创建）
   ttl: 24h
   default_refresh_interval: 24h
   auto_update: true

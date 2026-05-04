@@ -17,8 +17,9 @@ import (
 
 // DomainFileLoader loads domain lists from files or URLs.
 type DomainFileLoader struct {
-	logger     *slog.Logger
-	httpClient *http.Client
+	logger             *slog.Logger
+	httpClient         *http.Client
+	lastDetectedFormat string // Store the last detected format
 }
 
 // NewDomainFileLoader creates a new domain file loader.
@@ -104,6 +105,7 @@ func (dfl *DomainFileLoader) parseDomains(content []byte, source string) ([]stri
 
 	// Detect and parse format
 	format := dfl.detectFormat(contentStr, source)
+	dfl.lastDetectedFormat = format // Store detected format
 	dfl.logger.Debug("detected format", "format", format, "source", source)
 
 	var domains []string
@@ -971,6 +973,12 @@ func (dfl *DomainFileLoader) cleanAndDeduplicate(domains []string) []string {
 	}
 
 	return result
+}
+
+// GetLastDetectedFormat returns the last detected format.
+// This is useful for updating configuration files with the detected format.
+func (dfl *DomainFileLoader) GetLastDetectedFormat() string {
+	return dfl.lastDetectedFormat
 }
 
 // ConvertFormat converts domain list from one format to another.

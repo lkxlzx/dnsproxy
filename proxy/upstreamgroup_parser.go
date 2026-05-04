@@ -82,6 +82,12 @@ type DomainListSpec struct {
 
 	// Format specifies the file format (optional, for faster parsing)
 	Format string `yaml:"format"`
+
+	// DomainCount is the number of domains in this list (auto-updated)
+	DomainCount int `yaml:"domain_count,omitempty"`
+
+	// LastUpdated is the last update timestamp (auto-updated)
+	LastUpdated string `yaml:"last_updated,omitempty"`
 }
 
 // CacheConfigSpec represents cache configuration.
@@ -260,16 +266,39 @@ func processDomainLists(
 				"name", groupName)
 		}
 
+		// Normalize format field: empty or "auto" means auto-detect
+		formatHint := listSpec.Format
+		if formatHint == "" || formatHint == "auto" {
+			formatHint = "" // Let loader auto-detect
+			logger.Info("format will be auto-detected",
+				"name", listSpec.Name,
+				"source", listSpec.Source)
+		}
+
 		logger.Info("loading domain list",
 			"name", listSpec.Name,
 			"source", listSpec.Source,
-			"group", groupName)
+			"group", groupName,
+			"format", formatHint)
 
-		// Load domains
+		// Load domains (format is auto-detected inside LoadDomains)
 		domains, err := loader.LoadDomains(listSpec.Source)
 		if err != nil {
 			return fmt.Errorf("loading domain list %q: %w", listSpec.Name, err)
 		}
+
+		// Get the detected format from loader
+		detectedFormat := loader.GetLastDetectedFormat()
+		if detectedFormat != "" {
+			lists[i].Format = detectedFormat
+			logger.Info("format detected",
+				"name", listSpec.Name,
+				"format", detectedFormat)
+		}
+
+		// Update domain count and last updated time
+		lists[i].DomainCount = len(domains)
+		lists[i].LastUpdated = time.Now().Format(time.RFC3339)
 
 		// If cache file is specified and manager exists, save as YAML
 		if listSpec.File != "" && manager != nil {
@@ -290,7 +319,9 @@ func processDomainLists(
 		logger.Info("loaded domain list",
 			"name", listSpec.Name,
 			"domains", len(domains),
-			"group", groupName)
+			"group", groupName,
+			"format", lists[i].Format,
+			"last_updated", lists[i].LastUpdated)
 
 		// Register with manager if provided
 		if manager != nil && listSpec.AutoUpdate {
@@ -313,7 +344,7 @@ func processDomainLists(
 				DomainCount:     len(domains),
 				AutoUpdate:      listSpec.AutoUpdate,
 				RefreshInterval: refreshInterval,
-				Format:          listSpec.Format,
+				Format:          lists[i].Format, // Use detected format
 			}
 
 			if err := manager.AddList(managedList); err != nil {

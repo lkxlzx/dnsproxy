@@ -1,0 +1,70 @@
+# 测试自动格式检测功能
+
+dns:
+    bind_hosts:
+        - 127.0.0.1
+    port: 5353
+    upstream_dns:
+        - 223.5.5.5
+upstream_groups:
+    - id: china-id
+      name: china
+      enabled: true
+      upstreams:
+        - 223.5.5.5
+      mode: load_balance
+      timeout: 10s
+    - id: overseas-id
+      name: overseas
+      enabled: true
+      upstreams:
+        - 8.8.8.8
+      mode: load_balance
+      timeout: 10s
+    - id: default-id
+      name: default
+      enabled: true
+      upstreams:
+        - 114.114.114.114
+      mode: load_balance
+      timeout: 10s
+domain_groups:
+    china-id:
+        domains:
+            - baidu.com
+    overseas-id:
+        domains:
+            - google.com
+# 测试自动格式检测
+domains_lists:
+    # 不指定 format，自动检测为 dnsmasq
+    - name: china-domains
+      source: https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf
+      group: china-id
+      file: ./cache/test-china-auto.yaml
+      auto_update: true
+      refresh_interval: 24h
+      enabled: true
+      # format 字段省略，将自动检测
+
+      domain_count: 114898
+      last_updated: 2026-05-04T10:55:52+08:00
+      format: dnsmasq
+    # 明确指定 format: auto
+    - name: gfwlist
+      source: https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt
+      group: overseas-id
+      file: ./cache/test-gfw-auto.yaml
+      auto_update: true
+      refresh_interval: 24h
+      enabled: true
+      format: gfwlist # 明确指定自动检测
+      domain_count: 4161
+      last_updated: 2026-05-04T10:55:52+08:00
+default_group: default-id
+cache:
+    enabled: true
+    directory: ./cache
+    ttl: 24h
+    default_refresh_interval: 24h
+    auto_update: true
