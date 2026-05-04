@@ -102,7 +102,11 @@ func (hrm *HotReloadManager) checkAndReload() error {
 func (hrm *HotReloadManager) Reload() error {
 	hrm.mu.Lock()
 	defer hrm.mu.Unlock()
+	return hrm.reloadLocked()
+}
 
+// reloadLocked reloads the configuration (caller must hold the lock)
+func (hrm *HotReloadManager) reloadLocked() error {
 	hrm.logger.Info("reloading configuration", "config", hrm.configPath)
 
 	// Read config file
@@ -179,7 +183,7 @@ func (hrm *HotReloadManager) AddDomainList(list DomainListSpec) error {
 	hrm.logger.Info("domain list added to config", "name", list.Name)
 
 	// Reload to apply changes
-	return hrm.Reload()
+	return hrm.reloadLocked()
 }
 
 // RemoveDomainList removes a domain list dynamically
@@ -219,7 +223,7 @@ func (hrm *HotReloadManager) RemoveDomainList(name string) error {
 	hrm.logger.Info("domain list removed from config", "name", name)
 
 	// Reload to apply changes
-	return hrm.Reload()
+	return hrm.reloadLocked()
 }
 
 // UpdateDomainList updates an existing domain list
@@ -273,5 +277,5 @@ func (hrm *HotReloadManager) UpdateDomainList(name string, updates map[string]in
 	hrm.logger.Info("domain list updated in config", "name", name)
 
 	// Reload to apply changes
-	return hrm.Reload()
+	return hrm.reloadLocked()
 }
