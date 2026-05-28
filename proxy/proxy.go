@@ -109,6 +109,10 @@ type Proxy struct {
 	// repetitions.
 	shortFlighter *optimisticResolver
 
+	// domainGroupMgr manages domain-based routing groups for dynamic rule
+	// enable/disable support.
+	domainGroupMgr *DomainGroupManager
+
 	// recDetector detects recursive requests that may appear when resolving
 	// requests for private addresses.
 	recDetector *recursionDetector
@@ -251,6 +255,18 @@ func New(c *Config) (p *Proxy, err error) {
 	p.CacheOptimisticMaxAge = cmp.Or(p.CacheOptimisticMaxAge, DefaultOptimisticMaxAge)
 
 	p.initCache()
+
+	// Initialize domain group manager if domain groups are configured
+	if len(c.DomainGroups) > 0 {
+		opts := &upstream.Options{}
+		
+		p.domainGroupMgr, err = NewDomainGroupManager(c.DomainGroups, opts)
+		if err != nil {
+			return nil, fmt.Errorf("init domain group manager: %w", err)
+		}
+		
+		p.logger.Info("domain group manager initialized", "groups", len(c.DomainGroups))
+	}
 
 	if p.MaxGoroutines > 0 {
 		p.logger.Info("max goroutines is set", "count", p.MaxGoroutines)
@@ -571,6 +587,16 @@ func (p *Proxy) selectUpstreams(d *DNSContext) (upstreams []upstream.Upstream, i
 		upstreams = getUpstreams(custom.upstream, host)
 		if len(upstreams) > 0 {
 			return upstreams, false
+		}
+	}
+
+	// Check domain group manager first (for dynamic routing)
+	if p.domainGroupMgr != nil {
+		groupUpstreams, err := p.domainGroupMgr.MatchDomain(host)
+		if err != nil {
+			p.logger.Warn("domain group match error", slogutil.KeyError, err)
+		} else if len(groupUpstreams) > 0 {
+			return groupUpstreams, false
 		}
 	}
 

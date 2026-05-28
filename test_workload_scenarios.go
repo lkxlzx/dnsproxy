@@ -74,9 +74,9 @@ func resolve(ctx context.Context, p *proxy.Proxy, domain string, qtype uint16) q
 }
 
 func printResult(r queryResult) {
-	status := "✓"
+	status := "�?
 	if r.err != nil {
-		status = "✗"
+		status = "�?
 	}
 	cache := ""
 	if r.fromCache {
@@ -87,11 +87,11 @@ func printResult(r queryResult) {
 }
 
 func printReport(rep scenarioReport) {
-	verdict := "PASS ✅"
+	verdict := "PASS �?
 	if !rep.passed {
-		verdict = "FAIL ❌"
+		verdict = "FAIL �?
 	}
-	fmt.Printf("\n[%s] %s — %s\n", verdict, rep.name, rep.detail)
+	fmt.Printf("\n[%s] %s �?%s\n", verdict, rep.name, rep.detail)
 }
 
 func buildProxy(logger *slog.Logger, minHeat int, timeWindow time.Duration) *proxy.Proxy {
@@ -113,11 +113,9 @@ func buildProxy(logger *slog.Logger, minHeat int, timeWindow time.Duration) *pro
 			ThresholdSeconds:        5,
 			ThresholdPercent:        80,
 			MaxConcurrent:           10,
-			ScanInterval:            500 * time.Millisecond,
-			MinHeatThreshold:        minHeat,
+						MinHeatThreshold:        minHeat,
 			TimeWindow:              timeWindow,
-			InactivityCheckInterval: 5 * time.Second,
-		},
+					},
 		UpstreamConfig: &proxy.UpstreamConfig{
 			Upstreams: []upstream.Upstream{ups},
 		},
@@ -162,16 +160,16 @@ func scenarioColdStart(ctx context.Context, p *proxy.Proxy) scenarioReport {
 	return rep
 }
 
-// ─── Scenario 2: Burst traffic – many clients, same domain ───────────────────
+// ─── Scenario 2: Burst traffic �?many clients, same domain ───────────────────
 // Simulates a CDN-style burst: 20 goroutines all query the same domain
 // simultaneously. Measures cache hit ratio and p99 latency.
 
 func scenarioBurstSameDomain(ctx context.Context, p *proxy.Proxy) scenarioReport {
-	rep := scenarioReport{name: "Burst Traffic – Same Domain"}
+	rep := scenarioReport{name: "Burst Traffic �?Same Domain"}
 	domain := "cloudflare.com."
 	const clients = 20
 
-	fmt.Println("\n── Scenario 2: Burst Traffic – Same Domain ──")
+	fmt.Println("\n── Scenario 2: Burst Traffic �?Same Domain ──")
 	fmt.Printf("  %d concurrent clients querying %s\n", clients, domain)
 
 	// Warm up once so the domain is cached.
@@ -511,11 +509,9 @@ func scenarioPrefetchVsBaseline(ctx context.Context) scenarioReport {
 			ThresholdSeconds:        5,
 			ThresholdPercent:        80,
 			MaxConcurrent:           5,
-			ScanInterval:            500 * time.Millisecond,
-			MinHeatThreshold:        4,
+						MinHeatThreshold:        4,
 			TimeWindow:              30 * time.Second,
-			InactivityCheckInterval: 5 * time.Second,
-		},
+					},
 		UpstreamConfig: &proxy.UpstreamConfig{Upstreams: []upstream.Upstream{ups2}},
 	})
 
@@ -621,11 +617,9 @@ func scenarioUpstreamFailover(ctx context.Context) scenarioReport {
 			ThresholdSeconds:        5,
 			ThresholdPercent:        80,
 			MaxConcurrent:           3,
-			ScanInterval:            500 * time.Millisecond,
-			MinHeatThreshold:        3,
+						MinHeatThreshold:        3,
 			TimeWindow:              30 * time.Second,
-			InactivityCheckInterval: 5 * time.Second,
-		},
+					},
 		UpstreamConfig: &proxy.UpstreamConfig{
 			Upstreams: []upstream.Upstream{badUps, goodUps}, // bad first, good as fallback
 		},
@@ -748,7 +742,7 @@ func main() {
 	}))
 
 	fmt.Println("╔══════════════════════════════════════════════════════════════╗")
-	fmt.Println("║     DNSProxy Smart Prefetch – Multi-Workload Scenario Test   ║")
+	fmt.Println("�?    DNSProxy Smart Prefetch �?Multi-Workload Scenario Test   �?)
 	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 	fmt.Println("Upstream: 8.8.8.8:53  |  MinHeat: 4  |  TimeWindow: 10s")
@@ -793,17 +787,17 @@ func main() {
 
 	fmt.Println()
 	fmt.Println("╔══════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                        FINAL SUMMARY                        ║")
+	fmt.Println("�?                       FINAL SUMMARY                        �?)
 	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
 	for _, r := range reports {
-		verdict := "PASS ✅"
+		verdict := "PASS �?
 		if !r.passed {
-			verdict = "FAIL ❌"
+			verdict = "FAIL �?
 		}
-		fmt.Printf("║  %-8s  %-38s  ║\n", verdict, r.name)
+		fmt.Printf("�? %-8s  %-38s  ║\n", verdict, r.name)
 	}
 	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
-	fmt.Printf("║  Total: %d scenarios  PASS: %d  FAIL: %d  Time: %s%s║\n",
+	fmt.Printf("�? Total: %d scenarios  PASS: %d  FAIL: %d  Time: %s%s║\n",
 		len(reports), passed, failed, elapsed.Round(time.Second),
 		spaces(14-len(elapsed.Round(time.Second).String())))
 	fmt.Println("╚══════════════════════════════════════════════════════════════╝")

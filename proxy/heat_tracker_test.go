@@ -61,13 +61,23 @@ func TestHeatTracker_InactivityRemoval(t *testing.T) {
 		t.Fatal("should be in queue")
 	}
 
-	// Last access at now+15s; check at now+15s+31s = now+46s
-	removed := ht.checkInactivity(now.Add(46 * time.Second))
-	if len(removed) != 1 {
-		t.Errorf("removed = %d, want 1", len(removed))
+	// With LRU-based cleanup, entries are removed when maxEntries is exceeded
+	// or when accessed after timeWindow expiration. This test now verifies
+	// that accessing after timeWindow resets the entry.
+	ht.onAccess("test.com.", 1, now.Add(46*time.Second))
+	
+	ht.mu.Lock()
+	e := ht.entries[makeKey("test.com.", 1)]
+	ht.mu.Unlock()
+	
+	if e == nil {
+		t.Fatal("entry should still exist")
 	}
-	if ht.isInQueue("test.com.", 1) {
-		t.Error("should be removed from queue")
+	if e.accessCount != 1 {
+		t.Errorf("accessCount = %d, want 1 (reset after window)", e.accessCount)
+	}
+	if e.inPrefetchQueue {
+		t.Error("should not be in queue after window reset")
 	}
 }
 
@@ -102,15 +112,21 @@ func TestHeatTracker_StaleEntryPurge(t *testing.T) {
 	// Single access — cold-start entry, never reaches threshold
 	ht.onAccess("stale.com.", 1, now)
 
-	// After 2× timeWindow, stale entry should be purged
-	ht.checkInactivity(now.Add(61 * time.Second))
+	// With LRU-based cleanup, stale entries are purged when:
+	// 1. maxEntries is exceeded (LRU eviction)
+	// 2. Accessed after timeWindow expiration (lazy cleanup)
+	// Accessing after 2× timeWindow should trigger lazy cleanup
+	ht.onAccess("stale.com.", 1, now.Add(61*time.Second))
 
 	ht.mu.Lock()
-	_, exists := ht.entries[makeKey("stale.com.", 1)]
+	e := ht.entries[makeKey("stale.com.", 1)]
 	ht.mu.Unlock()
 
-	if exists {
-		t.Error("stale cold-start entry should be purged")
+	if e == nil {
+		t.Fatal("entry should exist after access")
+	}
+	if e.accessCount != 1 {
+		t.Errorf("accessCount = %d, want 1 (reset after window)", e.accessCount)
 	}
 }
 

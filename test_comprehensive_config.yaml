@@ -1,0 +1,78 @@
+# 综合功能测试配置文件
+# 测试：预取、域名分组、DNS分组、域名列表分组、动态启用/禁用
+
+# 监听配置
+listen-addrs:
+  - 127.0.0.1
+
+listen-ports:
+  - 15353
+
+# 默认上游DNS服务器
+upstream:
+  - 8.8.8.8
+  - 1.1.1.1
+
+# 缓存配置
+cache: true
+cache-size: 10000
+cache-min-ttl: 0
+cache-max-ttl: 0
+
+# 智能预取配置
+cache-prefetch-enabled: true
+cache-prefetch-threshold-seconds: 3
+cache-prefetch-threshold-percent: 80
+cache-prefetch-max-concurrent: 5
+cache-prefetch-min-heat-threshold: 3
+cache-prefetch-time-window: 30s
+cache-prefetch-max-retries: 2
+cache-prefetch-initial-retry-delay: 1s
+
+# 域名分组配置
+domain-groups:
+  # 中国域名分组
+  - name: china
+    enabled: true
+    domains:
+      - baidu.com
+      - taobao.com
+      - qq.com
+      - sina.com.cn
+      - 163.com
+    upstream:
+      - 223.5.5.5
+      - 119.29.29.29
+
+  # 广告拦截分组（使用关键字匹配）
+  - name: ads
+    enabled: true
+    domains:
+      - keyword:ad
+      - keyword:tracker
+      - keyword:analytics
+      - doubleclick.net
+      - googlesyndication.com
+    upstream:
+      - 0.0.0.0
+
+  # 自定义分组（初始禁用，用于测试动态启用）
+  - name: custom
+    enabled: false
+    domains:
+      - example.com
+      - test.com
+    upstream:
+      - 1.0.0.1
+
+  # 通配符测试分组
+  - name: wildcard-test
+    enabled: true
+    domains:
+      - "*.cdn.example.com"
+      - "*.static.test.com"
+    upstream:
+      - 8.8.4.4
+
+# 日志配置
+verbose: true

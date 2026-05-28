@@ -46,8 +46,7 @@ func main() {
 			ScanInterval:            1 * time.Second,  // Scan every second
 			MinHeatThreshold:        3,                // Join queue after 3 accesses
 			TimeWindow:              30 * time.Second, // 30s time window
-			InactivityCheckInterval: 10 * time.Second,
-		},
+					},
 		UpstreamConfig: &proxy.UpstreamConfig{
 			Upstreams: []upstream.Upstream{ups},
 		},
@@ -60,7 +59,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("âœ“ Proxy created successfully")
+	fmt.Println("âœ?Proxy created successfully")
 	fmt.Println()
 
 	ctx := context.Background()
@@ -100,7 +99,7 @@ func main() {
 		}
 	}
 
-	fmt.Println("\nâœ“ All domains should now be in prefetch queue")
+	fmt.Println("\nâœ?All domains should now be in prefetch queue")
 	fmt.Println()
 
 	// Phase 2: Wait and observe prefetch activity
@@ -154,7 +153,7 @@ func main() {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	fmt.Println("\nâœ“ Domain added to prefetch queue")
+	fmt.Println("\nâœ?Domain added to prefetch queue")
 	fmt.Println("Waiting 15 seconds for inactivity timeout...")
 	fmt.Println("(Domain should be removed from queue due to inactivity)")
 	fmt.Println()
@@ -188,11 +187,11 @@ func main() {
 	fmt.Println("=== Test Completed Successfully ===")
 	fmt.Println()
 	fmt.Println("Summary:")
-	fmt.Println("âœ“ Domains were queried and cached")
-	fmt.Println("âœ“ Heat tracking triggered prefetch queue entry")
-	fmt.Println("âœ“ Prefetch scheduler monitored cache entries")
-	fmt.Println("âœ“ Inactive domains were removed from queue")
-	fmt.Println("âœ“ Cache remained fresh throughout the test")
+	fmt.Println("âœ?Domains were queried and cached")
+	fmt.Println("âœ?Heat tracking triggered prefetch queue entry")
+	fmt.Println("âœ?Prefetch scheduler monitored cache entries")
+	fmt.Println("âœ?Inactive domains were removed from queue")
+	fmt.Println("âœ?Cache remained fresh throughout the test")
 }
 
 func createDNSRequest(domain string, qtype uint16) *dns.Msg {

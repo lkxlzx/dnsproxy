@@ -1,0 +1,24 @@
+# DNS上游分组配置文件（支持引用外部域名文件）
+
+# 默认上游DNS服务器
+upstream_dns:
+  - 8.8.8.8:53
+  - 1.1.1.1:53
+
+# 域名分组配置
+upstream_dns_groups:
+  # 从文件加载中国域名列表
+  - name: china
+    domain_file: example_domain_groups.txt  # 从文件加载
+    upstreams:
+      - 223.5.5.5:53
+      - 119.29.29.29:53
+
+  # 混合使用：既有直接配置的域名，也有从文件加载的
+  - name: mixed
+    domains:
+      - example.com
+      - test.org
+    domain_file: additional_domains.txt  # 可选：额外的域名文件
+    upstreams:
+      - 1.2.3.4:53

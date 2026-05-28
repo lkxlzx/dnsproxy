@@ -10,10 +10,11 @@
 - **全局时钟T**: 用于TTL管理，每秒递增，预获取成功后重置为0
 - **真实时间**: 用于热度管理，不受T重置影响
 
-### 2. 热度跟踪
+### 2. 热度跟踪（事件驱动）
 - **冷启动阶段**: 域名在180秒内访问6次后加入主动刷新队列
 - **队列管理**: 只对队列中的域名进行预获取
-- **不活跃剔除**: 超过180秒未访问的域名从队列中移除
+- **LRU内存管理**: 最多保留10,000个热度条目，超出时自动淘汰最久未使用的条目
+- **懒惰清理**: 访问时检查时间窗口，过期条目自动重置，无需定时扫描
 
 ### 3. 双阈值触发
 - **固定阈值**: 剩余TTL < 5秒时触发（处理长TTL）
@@ -41,9 +42,6 @@ cache-prefetch-threshold-percent: 80
 ```yaml
 # 最大并发预获取任务数
 cache-prefetch-max-concurrent: 10
-
-# 扫描间隔
-cache-prefetch-scan-interval: 1s
 ```
 
 ### 热度管理
@@ -51,11 +49,8 @@ cache-prefetch-scan-interval: 1s
 # 最小热度阈值（冷启动阶段需达到的访问次数）
 cache-prefetch-min-heat-threshold: 6
 
-# 时间窗口（用于冷启动判断和队列剔除）
+# 时间窗口（用于冷启动判断）
 cache-prefetch-time-window: 180s
-
-# 不活跃检查间隔
-cache-prefetch-inactivity-check-interval: 10s
 ```
 
 ## 工作流程
@@ -78,23 +73,32 @@ T=150   第6次访问，AccessCount = 6
         InPrefetchQueue = true
 ```
 
-### 主动刷新阶段
+### 主动刷新阶段（按需触发）
 ```
+用户查询时检查：
 T=295   剩余TTL = 300 - 295 = 5秒
-        触发预获取
+        满足预获取条件
+        → 立即触发预获取（异步）
+        → 返回缓存结果给用户
 
 T=296   预获取完成，新TTL=305
         T重置为0
         ExpiresAt = 305
-        LastAccessTime更新（预获取算活动）
+        LastAccessTime更新
 ```
 
-### 队列剔除
+### 懒惰清理机制
 ```
-如果超过180秒未访问（包括预获取）：
-        → 从队列中剔除
+访问时检查时间窗口：
+如果 now - FirstAccessTime > 180秒：
+        → 重置冷启动状态
+        AccessCount = 1
+        FirstAccessTime = now
         InPrefetchQueue = false
-        重置冷启动状态
+
+LRU淘汰：
+如果热度条目数 > 10,000：
+        → 自动淘汰最久未使用的条目
 ```
 
 ## 向后兼容性
@@ -117,19 +121,27 @@ T=296   预获取完成，新TTL=305
 - [x] 配置结构定义 (`prefetch_config.go`)
 - [x] 全局时钟系统 (`global_clock.go`)
 - [x] 扩展缓存条目 (`cache_entry_ext.go`)
-- [x] 热度跟踪器 (`heat_tracker.go`)
-- [x] 预获取调度器 (`prefetch_scheduler.go`)
+- [x] 热度跟踪器 (`heat_tracker.go`) - 带LRU和懒惰清理
+- [x] 预获取调度器 (`prefetch_scheduler.go`) - 按需触发模式
 - [x] 配置集成 (`config.go`)
+- [x] 与现有缓存系统集成 (`cache_prefetch.go`)
+- [x] 实际的DNS查询逻辑
+- [x] 预获取成功/失败处理
+- [x] 指数退避重试机制
+- [x] 单元测试
+- [x] 集成测试
+- [x] 并发测试
+- [x] 性能优化（移除定时扫描）
 - [x] 编译验证
 
-### 待完成
-- [ ] 与现有缓存系统集成
-- [ ] 实现实际的DNS查询逻辑
-- [ ] 预获取成功/失败处理
-- [ ] 统计指标收集
-- [ ] 单元测试
-- [ ] 集成测试
-- [ ] 性能测试
+### 优化历史
+- **v1.0**: 初始实现，使用定时扫描（每秒）和定时不活跃检查（每10秒）
+- **v2.0**: 优化为事件驱动架构
+  - 移除定时扫描循环
+  - 移除定时不活跃检查
+  - 实现LRU内存管理
+  - 实现懒惰清理机制
+  - 预获取改为按需触发（用户查询时）
 
 ## 使用示例
 
@@ -151,17 +163,19 @@ T=296   预获取完成，新TTL=305
 
 ### 内存开销
 - 每个缓存条目增加约64字节（热度跟踪数据）
+- 热度条目最多10,000个，使用LRU自动淘汰
 - 预获取队列使用map存储，内存占用与热门域名数量成正比
 
-### CPU开销
-- 扫描循环每秒执行一次
-- 不活跃检查每10秒执行一次
+### CPU开销（优化后）
+- **无定时扫描**: 完全事件驱动，无后台定时任务
+- **懒惰清理**: 仅在访问时检查，无额外CPU开销
+- **按需触发**: 预获取仅在用户查询时触发，无浪费
 - 后台查询使用goroutine池，限制并发数
 
 ### 网络开销
 - 只对热门域名进行预获取
 - 预获取频率受TTL和阈值控制
-- 失败的预获取不会重试
+- 失败的预获取支持指数退避重试
 
 ## 调试
 
@@ -171,10 +185,11 @@ verbose: true
 ```
 
 ### 关键日志
-- `prefetch scheduler started`: 调度器启动
+- `prefetch scheduler started (on-demand mode)`: 调度器启动（按需模式）
+- `cache prefetch enabled (on-demand mode)`: 预获取启用（按需模式）
 - `prefetch triggered`: 触发预获取
 - `prefetch completed`: 预获取完成
-- `removed inactive domains`: 剔除不活跃域名
+- `prefetch failed`: 预获取失败（会自动重试）
 
 ## 下一步
 

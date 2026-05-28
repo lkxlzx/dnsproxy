@@ -41,11 +41,9 @@ func TestCachePrefetch_Integration(t *testing.T) {
 			Enabled:                 true,
 			ThresholdSeconds:        3,  // Short threshold for testing
 			ThresholdPercent:        80,
-			MaxConcurrent:           5,
-			ScanInterval:            500 * time.Millisecond, // Fast scanning
+			MaxConcurrent:           5, // Fast scanning
 			MinHeatThreshold:        3,  // Lower threshold for testing
 			TimeWindow:              10 * time.Second,
-			InactivityCheckInterval: 2 * time.Second,
 		},
 		UpstreamConfig: &UpstreamConfig{
 			Upstreams: []upstream.Upstream{ups},
@@ -148,10 +146,8 @@ func TestCachePrefetch_InactivityRemoval(t *testing.T) {
 			ThresholdSeconds:        3,
 			ThresholdPercent:        80,
 			MaxConcurrent:           5,
-			ScanInterval:            500 * time.Millisecond,
 			MinHeatThreshold:        3,
-			TimeWindow:              5 * time.Second,  // Short window for testing
-			InactivityCheckInterval: 1 * time.Second,  // Fast checking
+			TimeWindow:              5 * time.Second,  // Short window for testing  // Fast checking
 		},
 		UpstreamConfig: &UpstreamConfig{
 			Upstreams: []upstream.Upstream{ups},
@@ -210,10 +206,8 @@ func TestCachePrefetch_MultipleDomainsHeatRanking(t *testing.T) {
 			ThresholdSeconds:        3,
 			ThresholdPercent:        80,
 			MaxConcurrent:           2,  // Limited concurrency
-			ScanInterval:            500 * time.Millisecond,
 			MinHeatThreshold:        3,
 			TimeWindow:              10 * time.Second,
-			InactivityCheckInterval: 2 * time.Second,
 		},
 		UpstreamConfig: &UpstreamConfig{
 			Upstreams: []upstream.Upstream{ups},

@@ -1,0 +1,40 @@
+# DNS上游分组配置文件（ADGH兼容格式）
+# 支持为不同域名指定不同的DNS服务器
+
+# 默认上游DNS服务器（用于未匹配的域名）
+upstream_dns:
+  - 8.8.8.8:53
+  - 1.1.1.1:53
+
+# 域名分组配置
+upstream_dns_groups:
+  # 中国域名使用国内DNS
+  - name: china
+    domains:
+      - baidu.com
+      - taobao.com
+      - qq.com
+      - weibo.com
+      - bilibili.com
+      - douyin.com
+    upstreams:
+      - 223.5.5.5:53      # 阿里DNS
+      - 119.29.29.29:53   # 腾讯DNS
+
+  # 公司内网域名
+  - name: company
+    domains:
+      - company.local
+      - internal.local
+    upstreams:
+      - 192.168.1.1:53
+    subdomains_only: false
+
+  # 广告域名（屏蔽）
+  - name: ads
+    domains:
+      - ads.example.com
+      - tracker.example.com
+    upstreams:
+      - 0.0.0.0:53
+    subdomains_only: true  # 只屏蔽子域名

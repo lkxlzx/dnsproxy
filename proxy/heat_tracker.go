@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"container/list"
 	"sync"
 	"time"
 )
@@ -13,24 +14,29 @@ type heatEntry struct {
 	accessCount     int
 	inPrefetchQueue bool
 	heatScore       int64
+	lruElement      *list.Element // Pointer to LRU list element
 }
 
 // heatTracker tracks domain access heat and manages the prefetch queue.
-// Uses sync.RWMutex so concurrent reads (isInQueue, getPrefetchCandidates)
-// do not block each other.
+// Uses LRU eviction to automatically limit memory usage.
+// Performs lazy cleanup of inactive entries on access.
 type heatTracker struct {
 	minHeatThreshold int
 	timeWindow       time.Duration
+	maxEntries       int // Maximum number of entries to track
 
 	mu      sync.RWMutex
 	entries map[string]*heatEntry
+	lruList *list.List // LRU list for automatic eviction
 }
 
 func newHeatTracker(minHeatThreshold int, timeWindow time.Duration) *heatTracker {
 	return &heatTracker{
 		minHeatThreshold: minHeatThreshold,
 		timeWindow:       timeWindow,
+		maxEntries:       10000, // Default: track up to 10k domains
 		entries:          make(map[string]*heatEntry),
+		lruList:          list.New(),
 	}
 }
 
@@ -61,6 +67,7 @@ func appendUint16(buf []byte, n uint16) []byte {
 // onAccess records an access for domain+qtype.
 // Returns true if the domain just crossed the heat threshold and entered
 // the prefetch queue for the first time.
+// Performs lazy cleanup and LRU eviction automatically.
 func (ht *heatTracker) onAccess(domain string, qtype uint16, now time.Time) bool {
 	key := makeKey(domain, qtype)
 
@@ -69,8 +76,27 @@ func (ht *heatTracker) onAccess(domain string, qtype uint16, now time.Time) bool
 
 	e, ok := ht.entries[key]
 	if !ok {
+		// Check if we need to evict (LRU)
+		if len(ht.entries) >= ht.maxEntries {
+			ht.evictOldest()
+		}
+
+		// Create new entry
 		e = &heatEntry{}
 		ht.entries[key] = e
+		e.lruElement = ht.lruList.PushFront(key)
+	} else {
+		// Move to front of LRU list (most recently used)
+		ht.lruList.MoveToFront(e.lruElement)
+
+		// Lazy cleanup: check if entry is inactive
+		if e.inPrefetchQueue && now.Sub(e.lastAccessTime) >= ht.timeWindow {
+			// Entry has been inactive, reset it
+			e.inPrefetchQueue = false
+			e.heatScore = 0
+			e.accessCount = 0
+			e.firstAccessTime = time.Time{}
+		}
 	}
 
 	if e.inPrefetchQueue {
@@ -105,14 +131,52 @@ func (ht *heatTracker) onAccess(domain string, qtype uint16, now time.Time) bool
 	return false
 }
 
+// evictOldest removes the least recently used entry.
+// Must be called with ht.mu locked.
+func (ht *heatTracker) evictOldest() {
+	if ht.lruList.Len() == 0 {
+		return
+	}
+
+	// Remove from back of LRU list (least recently used)
+	oldest := ht.lruList.Back()
+	if oldest != nil {
+		key := oldest.Value.(string)
+		ht.lruList.Remove(oldest)
+		delete(ht.entries, key)
+	}
+}
+
 // isInQueue reports whether domain+qtype is currently in the prefetch queue.
 // Uses RLock because it is a read-only operation.
+// Performs lazy cleanup if entry is inactive.
 func (ht *heatTracker) isInQueue(domain string, qtype uint16) bool {
 	key := makeKey(domain, qtype)
 	ht.mu.RLock()
 	e, ok := ht.entries[key]
+	if !ok {
+		ht.mu.RUnlock()
+		return false
+	}
+
+	// Lazy cleanup check
+	if e.inPrefetchQueue && time.Since(e.lastAccessTime) >= ht.timeWindow {
+		ht.mu.RUnlock()
+		// Upgrade to write lock for cleanup
+		ht.mu.Lock()
+		// Double-check after acquiring write lock
+		if e.inPrefetchQueue && time.Since(e.lastAccessTime) >= ht.timeWindow {
+			e.inPrefetchQueue = false
+			e.heatScore = 0
+		}
+		result := e.inPrefetchQueue
+		ht.mu.Unlock()
+		return result
+	}
+
+	result := e.inPrefetchQueue
 	ht.mu.RUnlock()
-	return ok && e.inPrefetchQueue
+	return result
 }
 
 // heatSnapshot is a value-type point-in-time copy used by the scheduler.
@@ -144,30 +208,6 @@ func (ht *heatTracker) getPrefetchCandidates() []heatSnapshot {
 	}
 
 	return result
-}
-
-// checkInactivity evicts queue entries that have been inactive for longer than
-// timeWindow, and purges stale cold-start entries to prevent unbounded growth.
-func (ht *heatTracker) checkInactivity(now time.Time) (removed []string) {
-	ht.mu.Lock()
-	defer ht.mu.Unlock()
-
-	for key, e := range ht.entries {
-		if e.inPrefetchQueue {
-			// Inactivity check: inactive if last access >= timeWindow ago (inclusive boundary)
-			if now.Sub(e.lastAccessTime) >= ht.timeWindow {
-				// Completely delete the entry to prevent memory leak
-				delete(ht.entries, key)
-				removed = append(removed, key)
-			}
-			continue
-		}
-		// Purge stale cold-start entries (never reached threshold).
-		if !e.firstAccessTime.IsZero() && now.Sub(e.firstAccessTime) >= ht.timeWindow*2 {
-			delete(ht.entries, key)
-		}
-	}
-	return removed
 }
 
 // splitKey reverses makeKey: "domain:qtype" -> (domain, qtype).

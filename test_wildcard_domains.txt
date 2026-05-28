@@ -1,0 +1,21 @@
+# 通配符域名测试文件
+# 演示各种匹配模式
+
+# 普通域名：匹配域名本身及其所有子域名
+# example.com 会匹配：example.com, www.example.com, api.example.com 等
+example.com
+test.org
+
+# 通配符域名：仅匹配子域名，不匹配基础域名
+# *.cdn.example.com 会匹配：img.cdn.example.com, static.cdn.example.com
+# 但不会匹配：cdn.example.com（因为 example.com 已经覆盖了）
+*.cdn.example.com
+*.api.test.org
+
+# GitHub 相关
+github.com
+*.github.io
+*.githubusercontent.com
+
+# 独立的通配符（没有对应的普通域名）
+*.special.domain.com

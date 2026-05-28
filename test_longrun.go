@@ -139,7 +139,7 @@ func (m *metrics) snapshot(latencies []float64) {
 	sort.Float64s(latencies)
 	p99 := 0.0
 	if len(latencies) > 0 {
-		p99 = latencies[int(float64(len(latencies))*0.99)] / 1000 // µs → ms
+		p99 = latencies[int(float64(len(latencies))*0.99)] / 1000 // µs �?ms
 	}
 	m.p99History = append(m.p99History, p99)
 
@@ -158,36 +158,36 @@ func (m *metrics) summary() {
 
 	fmt.Println()
 	fmt.Println("╔══════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                   30-MINUTE TEST SUMMARY                    ║")
+	fmt.Println("�?                  30-MINUTE TEST SUMMARY                    �?)
 	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
-	fmt.Printf("║  Total queries : %-43d║\n", total)
-	fmt.Printf("║  Cache hits    : %-43d║\n", hits)
-	fmt.Printf("║  Cache misses  : %-43d║\n", m.cacheMisses.Load())
-	fmt.Printf("║  Errors        : %-43d║\n", errs)
+	fmt.Printf("�? Total queries : %-43d║\n", total)
+	fmt.Printf("�? Cache hits    : %-43d║\n", hits)
+	fmt.Printf("�? Cache misses  : %-43d║\n", m.cacheMisses.Load())
+	fmt.Printf("�? Errors        : %-43d║\n", errs)
 	if total > 0 {
-		fmt.Printf("║  Hit ratio     : %-42s ║\n",
+		fmt.Printf("�? Hit ratio     : %-42s ║\n",
 			fmt.Sprintf("%.2f%%", float64(hits)/float64(total)*100))
 	}
 
 	// Latency distribution
 	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
-	fmt.Println("║  Latency distribution:                                       ║")
-	labels := []string{"<0.5ms", "<2ms", "<10ms", "<50ms", "≥50ms"}
+	fmt.Println("�? Latency distribution:                                       �?)
+	labels := []string{"<0.5ms", "<2ms", "<10ms", "<50ms", "�?0ms"}
 	for i, b := range m.latBuckets {
 		v := b.Load()
 		pct := 0.0
 		if total > 0 {
 			pct = float64(v) / float64(total) * 100
 		}
-		fmt.Printf("║    %-8s %6d  (%.1f%%)%-26s║\n", labels[i], v, pct, "")
+		fmt.Printf("�?   %-8s %6d  (%.1f%%)%-26s║\n", labels[i], v, pct, "")
 	}
 
 	// p99 trend
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
-	fmt.Println("║  p99 latency trend (ms per 30s window):                      ║")
-	line := "║  "
+	fmt.Println("�? p99 latency trend (ms per 30s window):                      �?)
+	line := "�? "
 	for i, v := range m.p99History {
 		line += fmt.Sprintf("%.1f", v)
 		if i < len(m.p99History)-1 {
@@ -198,8 +198,8 @@ func (m *metrics) summary() {
 
 	// hit% trend
 	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
-	fmt.Println("║  Cache hit% trend (per 30s window):                          ║")
-	line = "║  "
+	fmt.Println("�? Cache hit% trend (per 30s window):                          �?)
+	line = "�? "
 	for i, v := range m.hitHistory {
 		line += fmt.Sprintf("%.0f%%", v)
 		if i < len(m.hitHistory)-1 {
@@ -210,8 +210,8 @@ func (m *metrics) summary() {
 
 	// memory trend
 	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
-	fmt.Println("║  Heap alloc trend (MB per 30s window):                       ║")
-	line = "║  "
+	fmt.Println("�? Heap alloc trend (MB per 30s window):                       �?)
+	line = "�? "
 	for i, v := range m.memHistory {
 		line += fmt.Sprintf("%.1f", float64(v)/1024/1024)
 		if i < len(m.memHistory)-1 {
@@ -269,11 +269,9 @@ func buildProxy(logger *slog.Logger) *proxy.Proxy {
 			ThresholdSeconds:        10,
 			ThresholdPercent:        80,
 			MaxConcurrent:           20,
-			ScanInterval:            500 * time.Millisecond,
-			MinHeatThreshold:        4,
+						MinHeatThreshold:        4,
 			TimeWindow:              120 * time.Second,
-			InactivityCheckInterval: 30 * time.Second,
-		},
+					},
 		UpstreamConfig: &proxy.UpstreamConfig{
 			Upstreams: []upstream.Upstream{ups},
 		},
@@ -308,7 +306,7 @@ func hotClient(ctx context.Context, p *proxy.Proxy, m *metrics, latCh chan<- flo
 		case latCh <- float64(lat.Microseconds()):
 		default:
 		}
-		// 50–200ms between queries
+		// 50�?00ms between queries
 		time.Sleep(jitter(100*time.Millisecond, 50*time.Millisecond))
 	}
 }
@@ -329,7 +327,7 @@ func warmClient(ctx context.Context, p *proxy.Proxy, m *metrics, latCh chan<- fl
 		case latCh <- float64(lat.Microseconds()):
 		default:
 		}
-		// 300ms–1.5s between queries
+		// 300ms�?.5s between queries
 		time.Sleep(jitter(800*time.Millisecond, 500*time.Millisecond))
 	}
 }
@@ -349,16 +347,16 @@ func coldClient(ctx context.Context, p *proxy.Proxy, m *metrics, latCh chan<- fl
 		case latCh <- float64(lat.Microseconds()):
 		default:
 		}
-		// 5–15s between queries (rarely accessed)
+		// 5�?5s between queries (rarely accessed)
 		time.Sleep(jitter(10*time.Second, 5*time.Second))
 	}
 }
 
-// burstClient: fires bursts of 20–50 concurrent queries every 2–5 minutes.
+// burstClient: fires bursts of 20�?0 concurrent queries every 2�? minutes.
 // Simulates traffic spikes (e.g. app startup, CI pipeline).
 func burstClient(ctx context.Context, p *proxy.Proxy, m *metrics, latCh chan<- float64) {
 	for {
-		// Wait 2–5 minutes between bursts
+		// Wait 2�? minutes between bursts
 		wait := jitter(3*time.Minute, 90*time.Second)
 		select {
 		case <-ctx.Done():
@@ -366,7 +364,7 @@ func burstClient(ctx context.Context, p *proxy.Proxy, m *metrics, latCh chan<- f
 		case <-time.After(wait):
 		}
 
-		batchSize := 20 + rand.Intn(31) // 20–50
+		batchSize := 20 + rand.Intn(31) // 20�?0
 		fmt.Printf("  [burst] firing %d concurrent queries\n", batchSize)
 
 		var wg sync.WaitGroup
@@ -410,14 +408,14 @@ func inactivityClient(ctx context.Context, p *proxy.Proxy, m *metrics, latCh cha
 				}
 				time.Sleep(200 * time.Millisecond)
 			}
-			// Go silent for 90–150s (longer than InactivityCheckInterval)
+			// Go silent for 90�?50s (longer than InactivityCheckInterval)
 			silent := jitter(120*time.Second, 30*time.Second)
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(silent):
 			}
-			// Come back — should re-warm from scratch
+			// Come back �?should re-warm from scratch
 			fromCache, lat, err := doResolve(ctx, p, domain, dns.TypeA)
 			m.record(lat, fromCache, err)
 			select {
@@ -483,7 +481,7 @@ func main() {
 	}))
 
 	fmt.Println("╔══════════════════════════════════════════════════════════════╗")
-	fmt.Println("║        DNSProxy Smart Prefetch – 30-Minute Long-Run Test     ║")
+	fmt.Println("�?       DNSProxy Smart Prefetch �?30-Minute Long-Run Test     �?)
 	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
 	fmt.Printf("  Start: %s\n", time.Now().Format("15:04:05"))
 	fmt.Printf("  End:   %s\n", time.Now().Add(totalDuration).Format("15:04:05"))
@@ -492,7 +490,7 @@ func main() {
 	p := buildProxy(logger)
 	m := &metrics{}
 
-	// Latency channel — buffered, workers drop if full (non-blocking)
+	// Latency channel �?buffered, workers drop if full (non-blocking)
 	latCh := make(chan float64, 10000)
 
 	// Graceful shutdown on Ctrl-C
@@ -518,7 +516,7 @@ func main() {
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
-	// Latency collector — drains latCh every tick
+	// Latency collector �?drains latCh every tick
 	var latMu sync.Mutex
 	var latBuf []float64
 	go func() {
@@ -639,7 +637,7 @@ func main() {
 			}
 
 		case "low-traffic":
-			// No extra workers — baseline only, verify prefetch keeps cache warm
+			// No extra workers �?baseline only, verify prefetch keeps cache warm
 
 		case "recovery", "steady-state", "wind-down":
 			// Standard extra warm client
@@ -705,14 +703,14 @@ done:
 	pass := true
 	check := func(label string, ok bool, detail string) {
 		if ok {
-			fmt.Printf("  ✅ %s — %s\n", label, detail)
+			fmt.Printf("  �?%s �?%s\n", label, detail)
 		} else {
-			fmt.Printf("  ❌ %s — %s\n", label, detail)
+			fmt.Printf("  �?%s �?%s\n", label, detail)
 			pass = false
 		}
 	}
 
-	check("Cache hit ratio ≥ 85%",
+	check("Cache hit ratio �?85%",
 		hitRatio >= 85,
 		fmt.Sprintf("%.2f%%", hitRatio))
 	check("Error rate < 1%",
@@ -739,9 +737,9 @@ done:
 
 	fmt.Println()
 	if pass {
-		fmt.Println("  RESULT: PASS ✅")
+		fmt.Println("  RESULT: PASS �?)
 	} else {
-		fmt.Println("  RESULT: FAIL ❌")
+		fmt.Println("  RESULT: FAIL �?)
 		os.Exit(1)
 	}
 }

@@ -1,0 +1,52 @@
+# 动态域名分组配置示例
+# 此配置演示如何使用域名分组功能实现动态路由
+
+# 默认上游服务器（当没有匹配任何规则时使用）
+default_upstreams:
+  - https://dns.google/dns-query
+  - https://cloudflare-dns.com/dns-query
+
+# 域名分组配置
+domain_groups:
+  # 中国域名使用国内DNS
+  - group_name: china-domains
+    domain_file: china_domains.txt
+    format: plain
+    upstreams:
+      - 223.5.5.5
+      - 119.29.29.29
+    subdomains_only: false
+    enabled: true
+
+  # 广告域名拦截
+  - group_name: ad-blocking
+    domain_file: ad_domains.txt
+    format: plain
+    upstreams:
+      - 0.0.0.0
+    subdomains_only: false
+    enabled: true
+
+  # 自定义路由
+  - group_name: custom-routing
+    domain_file: custom_domains.txt
+    format: plain
+    upstreams:
+      - 1.1.1.1
+      - 8.8.8.8
+    subdomains_only: false
+    enabled: true
+
+# 缓存配置
+cache:
+  enabled: true
+  size_bytes: 67108864  # 64MB
+  min_ttl: 60
+  max_ttl: 3600
+
+# 监听地址
+listen:
+  udp:
+    - 127.0.0.1:5353
+  tcp:
+    - 127.0.0.1:5353

@@ -18,15 +18,14 @@ cache-size: 10000
 cache-min-ttl: 0
 cache-max-ttl: 0
 
-# Smart prefetch configuration (NEW)
+# Smart prefetch configuration (NEW - Optimized v2.0)
 cache-prefetch-enabled: true
 cache-prefetch-threshold-seconds: 5
 cache-prefetch-threshold-percent: 80
 cache-prefetch-max-concurrent: 10
-cache-prefetch-scan-interval: 1s
 cache-prefetch-min-heat-threshold: 6
 cache-prefetch-time-window: 180s
-cache-prefetch-inactivity-check-interval: 10s
+# Note: scan-interval and inactivity-check-interval removed in v2.0 (event-driven architecture)
 
 # Logging
 verbose: true

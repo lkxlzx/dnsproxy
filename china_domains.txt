@@ -1,0 +1,23 @@
+# 中国常用域名列表示例
+# 支持多种格式：
+# 1. 普通域名：baidu.com (匹配 baidu.com 及其所有子域名)
+# 2. 通配符：*.example.com (仅匹配子域名，不匹配 example.com 本身)
+
+# 搜索引擎
+baidu.com
+taobao.com
+qq.com
+weixin.com
+jd.com
+tmall.com
+alipay.com
+163.com
+sina.com.cn
+sohu.com
+bilibili.com
+douyin.com
+zhihu.com
+csdn.net
+
+# 通配符示例：仅匹配子域名
+# *.cdn.example.com 会匹配 img.cdn.example.com，但不匹配 cdn.example.com

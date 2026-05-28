@@ -63,9 +63,6 @@ func validatePrefetchConfig(c *PrefetchConfig) error {
 	if c.MinHeatThreshold <= 0 {
 		return fmt.Errorf("prefetch: min_heat_threshold must be > 0")
 	}
-	if c.ScanInterval <= 0 {
-		return fmt.Errorf("prefetch: scan_interval must be > 0")
-	}
 	if c.TimeWindow <= 0 {
 		return fmt.Errorf("prefetch: time_window must be > 0")
 	}
@@ -107,14 +104,12 @@ func newCachePrefetch(
 
 	cp.heatTracker = newHeatTracker(config.MinHeatThreshold, config.TimeWindow)
 
-	cp.scheduler = newPrefetchScheduler(config, cp.heatTracker, logger)
+	cp.scheduler = newPrefetchScheduler(config, logger)
 	cp.scheduler.executor = cp.executePrefetchQuery
-	cp.scheduler.shouldPrefetch = cp.shouldPrefetchDomain
-	cp.scheduler.onEvict = cp.onDomainEvicted
 
-	cp.scheduler.start(ctx)
+	cp.scheduler.start()
 
-	logger.Info("cache prefetch enabled",
+	logger.Info("cache prefetch enabled (on-demand mode)",
 		"threshold_seconds", config.ThresholdSeconds,
 		"threshold_percent", config.ThresholdPercent,
 		"min_heat", config.MinHeatThreshold,
@@ -143,7 +138,21 @@ func (cp *cachePrefetch) get(req *dns.Msg) (*cacheItem, bool, []byte) {
 	ci, expired, key := cp.cache.get(req)
 	if ci != nil && len(req.Question) > 0 {
 		q := req.Question[0]
+		// Extract TTL from the DNS message
+		ttl := cacheTTLFromMsg(ci.m)
 		cp.recordAccess(q.Name, q.Qtype)
+		// Update extEntry TTL from the cached item
+		if ttl > 0 {
+			cp.updateEntryTTL(q.Name, q.Qtype, ttl)
+		}
+		// Trigger immediate prefetch if threshold is reached
+		if cp.shouldPrefetchDomain(q.Name, q.Qtype) {
+			cp.logger.Info("🔄 triggering immediate prefetch",
+				"domain", q.Name,
+				"qtype", q.Qtype,
+				"ttl", ttl)
+			cp.scheduler.triggerPrefetch(q.Name, q.Qtype)
+		}
 	}
 	return ci, expired, key
 }
@@ -152,7 +161,17 @@ func (cp *cachePrefetch) getWithSubnet(req *dns.Msg, subnet *net.IPNet) (*cacheI
 	ci, expired, key := cp.cache.getWithSubnet(req, subnet)
 	if ci != nil && len(req.Question) > 0 {
 		q := req.Question[0]
+		// Extract TTL from the DNS message
+		ttl := cacheTTLFromMsg(ci.m)
 		cp.recordAccess(q.Name, q.Qtype)
+		// Update extEntry TTL from the cached item
+		if ttl > 0 {
+			cp.updateEntryTTL(q.Name, q.Qtype, ttl)
+		}
+		// Trigger immediate prefetch if threshold is reached
+		if cp.shouldPrefetchDomain(q.Name, q.Qtype) {
+			cp.scheduler.triggerPrefetch(q.Name, q.Qtype)
+		}
 	}
 	return ci, expired, key
 }
@@ -174,6 +193,7 @@ func (cp *cachePrefetch) isOptimistic() bool    { return cp.cache.isOptimistic()
 // ────────────────────────────────────────────────────────────────────────────
 
 // recordAccess records an access to a domain+qtype and updates heat.
+// Triggers on-demand prefetch if conditions are met.
 // shard.mu and heatTracker.mu are never held simultaneously.
 func (cp *cachePrefetch) recordAccess(domain string, qtype uint16) {
 	key := makeKey(domain, qtype)
@@ -181,7 +201,7 @@ func (cp *cachePrefetch) recordAccess(domain string, qtype uint16) {
 
 	// Fast path: check if entry exists.
 	shard.mu.RLock()
-	_, exists := shard.entries[key]
+	entry, exists := shard.entries[key]
 	shard.mu.RUnlock()
 
 	if !exists {
@@ -203,6 +223,31 @@ func (cp *cachePrefetch) recordAccess(domain string, qtype uint16) {
 	if joined {
 		cp.logger.Debug("domain joined prefetch queue", "domain", domain, "qtype", qtype)
 	}
+
+	// Check if prefetch should be triggered (on-demand)
+	if exists && entry != nil && cp.heatTracker.isInQueue(domain, qtype) {
+		if cp.shouldPrefetchDomain(domain, qtype) {
+			cp.scheduler.triggerPrefetch(domain, qtype)
+		}
+	}
+}
+
+// updateEntryTTL updates the TTL of an existing extEntry from a cache hit.
+// This ensures the extEntry TTL stays in sync with the base cache.
+func (cp *cachePrefetch) updateEntryTTL(domain string, qtype uint16, ttl uint32) {
+	key := makeKey(domain, qtype)
+	shard := cp.getShard(key)
+	now := time.Now()
+
+	shard.mu.Lock()
+	if entry, ok := shard.entries[key]; ok {
+		// Only update if this is a new cache entry (originalTTL was 0)
+		// or if the TTL has increased (indicating a refresh)
+		if entry.originalTTL == 0 || ttl > entry.remainingTTL(now.Unix()) {
+			entry.refreshTTL(ttl, now)
+		}
+	}
+	shard.mu.Unlock()
 }
 
 // onDomainEvicted is called by the scheduler when a domain+qtype is evicted
@@ -269,6 +314,7 @@ func (cp *cachePrefetch) shouldPrefetchDomain(domain string, qtype uint16) bool 
 
 	nowUnix := time.Now().Unix()
 	remaining := entry.remainingTTL(nowUnix)
+
 	if remaining == 0 {
 		return false
 	}

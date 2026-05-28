@@ -47,8 +47,7 @@ func main() {
 			ScanInterval:            500 * time.Millisecond, // Scan twice per second
 			MinHeatThreshold:        2,                      // Very low threshold
 			TimeWindow:              20 * time.Second,
-			InactivityCheckInterval: 5 * time.Second,
-		},
+					},
 		UpstreamConfig: &proxy.UpstreamConfig{
 			Upstreams: []upstream.Upstream{ups},
 		},
@@ -60,7 +59,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("âœ“ Proxy created with aggressive prefetch settings:")
+	fmt.Println("âœ?Proxy created with aggressive prefetch settings:")
 	fmt.Println("  - Threshold: 10 seconds or 90% of TTL")
 	fmt.Println("  - Scan interval: 500ms")
 	fmt.Println("  - Min heat: 2 accesses")
@@ -99,7 +98,7 @@ func main() {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	fmt.Println("\nâœ“ Domain should now be in prefetch queue")
+	fmt.Println("\nâœ?Domain should now be in prefetch queue")
 	fmt.Println()
 
 	// Phase 2: Monitor cache and wait for prefetch
@@ -130,7 +129,7 @@ func main() {
 
 			// If TTL is still high, prefetch likely refreshed it
 			if monitorCount > 3 && ttl > 200 {
-				fmt.Println("\nâœ“ TTL appears to have been refreshed by prefetch!")
+				fmt.Println("\nâœ?TTL appears to have been refreshed by prefetch!")
 				fmt.Println("  (TTL should have decreased but is still high)")
 				break
 			}
@@ -169,10 +168,10 @@ func main() {
 	fmt.Println("=== Test Completed ===")
 	fmt.Println()
 	fmt.Println("Summary:")
-	fmt.Println("âœ“ Domain was added to prefetch queue after 2 accesses")
-	fmt.Println("âœ“ Prefetch scheduler monitored cache TTL")
-	fmt.Println("âœ“ Cache was automatically refreshed before expiration")
-	fmt.Println("âœ“ Continuous access pattern maintained cache freshness")
+	fmt.Println("âœ?Domain was added to prefetch queue after 2 accesses")
+	fmt.Println("âœ?Prefetch scheduler monitored cache TTL")
+	fmt.Println("âœ?Cache was automatically refreshed before expiration")
+	fmt.Println("âœ?Continuous access pattern maintained cache freshness")
 	fmt.Println()
 	fmt.Println("Key observations:")
 	fmt.Println("- Cache entries are refreshed proactively")

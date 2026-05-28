@@ -17,7 +17,7 @@ func TestPrefetchScheduler_ShouldPrefetchDomain(t *testing.T) {
 	config.ThresholdPercent = 80
 
 	ht := newHeatTracker(config.MinHeatThreshold, config.TimeWindow)
-	ps := newPrefetchScheduler(config, ht, newTestLogger())
+	ps := newPrefetchScheduler(config, newTestLogger())
 
 	// Build a minimal cachePrefetch to use shouldPrefetchDomain
 	baseCache := newCache(&cacheConfig{size: 1024 * 1024})
@@ -142,16 +142,10 @@ func TestPrefetchConfig_Defaults(t *testing.T) {
 	if config.MaxConcurrent != 10 {
 		t.Errorf("MaxConcurrent = %d, want 10", config.MaxConcurrent)
 	}
-	if config.ScanInterval != 1*time.Second {
-		t.Errorf("ScanInterval = %v, want 1s", config.ScanInterval)
-	}
 	if config.MinHeatThreshold != 6 {
 		t.Errorf("MinHeatThreshold = %d, want 6", config.MinHeatThreshold)
 	}
 	if config.TimeWindow != 180*time.Second {
 		t.Errorf("TimeWindow = %v, want 180s", config.TimeWindow)
-	}
-	if config.InactivityCheckInterval != 10*time.Second {
-		t.Errorf("InactivityCheckInterval = %v, want 10s", config.InactivityCheckInterval)
 	}
 }

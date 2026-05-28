@@ -1,0 +1,12 @@
+# 自定义路由域名列表示例
+# 支持普通域名和通配符格式
+
+# 开发平台
+github.com
+stackoverflow.com
+reddit.com
+twitter.com
+
+# 通配符示例
+*.github.io
+*.githubusercontent.com

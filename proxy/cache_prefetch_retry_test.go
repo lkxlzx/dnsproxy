@@ -18,10 +18,8 @@ func TestCachePrefetch_RetryLogic(t *testing.T) {
 			ThresholdSeconds:        5,
 			ThresholdPercent:        80,
 			MaxConcurrent:           10,
-			ScanInterval:            100 * time.Millisecond,
 			MinHeatThreshold:        3,
 			TimeWindow:              10 * time.Second,
-			InactivityCheckInterval: 1 * time.Second,
 			MaxRetries:              2,
 			RetryDelay:              100 * time.Millisecond,
 		}
@@ -95,10 +93,8 @@ func TestCachePrefetch_RetryIntegration(t *testing.T) {
 			ThresholdSeconds:        5,
 			ThresholdPercent:        80,
 			MaxConcurrent:           10,
-			ScanInterval:            100 * time.Millisecond,
 			MinHeatThreshold:        3,
 			TimeWindow:              10 * time.Second,
-			InactivityCheckInterval: 1 * time.Second,
 			MaxRetries:              2,
 			RetryDelay:              50 * time.Millisecond,
 		}

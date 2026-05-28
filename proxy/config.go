@@ -74,6 +74,12 @@ type Config struct {
 	// [upstream.ErrNoUpstream] if it's empty.
 	PrivateRDNSUpstreamConfig *UpstreamConfig
 
+	// DomainGroups is the list of domain group configurations for dynamic
+	// domain-based routing.  These groups are not converted to upstream config
+	// at load time, but are matched dynamically at query time to support
+	// real-time enable/disable of rules.
+	DomainGroups []DomainGroupConfig
+
 	// Fallbacks is a list of fallback resolvers.  Those will be used if the
 	// general set fails responding.  It isn't allowed to be empty, but can be
 	// nil, which means not to use fallbacks.

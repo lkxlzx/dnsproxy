@@ -1,0 +1,23 @@
+# 中国常用域名列表
+# 每行一个域名，支持注释
+
+# 搜索引擎
+baidu.com
+sogou.com
+so.com
+
+# 电商平台
+taobao.com
+tmall.com
+jd.com
+pinduoduo.com
+
+# 社交媒体
+weibo.com
+douyin.com
+bilibili.com
+
+# 视频平台
+youku.com
+iqiyi.com
+qq.com

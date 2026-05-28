@@ -1,0 +1,20 @@
+# 广告域名列表示例
+# 支持通配符格式和关键字匹配
+
+# 关键字匹配：匹配包含关键字的任何域名
+keyword:ad
+keyword:ads
+keyword:adservice
+keyword:tracker
+keyword:analytics
+keyword:doubleclick
+
+# 精确域名
+pagead2.googlesyndication.com
+ads.facebook.com
+ads.twitter.com
+ads.youtube.com
+
+# 通配符示例：拦截所有广告子域名
+*.ads.example.com
+*.tracker.example.com

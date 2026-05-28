@@ -27,10 +27,8 @@ func BenchmarkCacheGetWithPrefetch(b *testing.B) {
 		ThresholdSeconds:        5,
 		ThresholdPercent:        80,
 		MaxConcurrent:           5,
-		ScanInterval:            1 * time.Second,
 		MinHeatThreshold:        3,
 		TimeWindow:              180 * time.Second,
-		InactivityCheckInterval: 10 * time.Second,
 	}
 	p := &Proxy{Config: Config{CachePrefetchConfig: config}}
 	cp := newCachePrefetch(baseCache, config, p, testLogger)
@@ -66,10 +64,8 @@ func BenchmarkCacheSetWithPrefetch(b *testing.B) {
 		ThresholdSeconds:        5,
 		ThresholdPercent:        80,
 		MaxConcurrent:           5,
-		ScanInterval:            1 * time.Second,
 		MinHeatThreshold:        3,
 		TimeWindow:              180 * time.Second,
-		InactivityCheckInterval: 10 * time.Second,
 	}
 	p := &Proxy{Config: Config{CachePrefetchConfig: config}}
 	cp := newCachePrefetch(baseCache, config, p, testLogger)
