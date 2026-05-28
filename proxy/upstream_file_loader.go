@@ -11,19 +11,50 @@ import (
 type DomainGroupConfig struct {
 	// GroupName 分组名称（用于日志）
 	GroupName string
+	
 	// DomainFile 域名列表文件路径（每行一个域名）
 	DomainFile string
+	
+	// DomainFileURL 域名列表远程URL（可选，用于自动更新）
+	DomainFileURL string
+	
 	// DomainFileFormat 域名文件格式（可选，默认自动检测）
 	DomainFileFormat DomainListFormat
-	// Upstreams 该分组使用的上游服务器列表
+	
+	// UpdateInterval 自动更新间隔（0表示不自动更新）
+	// 例如: "24h", "1h30m", "30m"
+	UpdateInterval string
+	
+	// UpstreamGroupID 上游分组ID（引用UpstreamGroup）
+	// 如果指定，则使用该分组的上游服务器（包括主备），忽略Upstreams和FallbackUpstreams字段
+	UpstreamGroupID string
+	
+	// Upstreams 该分组使用的主要上游服务器列表（当UpstreamGroupID为空时使用）
 	Upstreams []string
+	
+	// FallbackUpstreams 该分组使用的备用上游服务器列表（当UpstreamGroupID为空时使用）
+	// 只有当所有主要上游都失败时才使用备用上游
+	FallbackUpstreams []string
+	
+	// DefaultUpstreamGroupID 默认上游分组ID（最终兜底）
+	// 当主要上游和备用上游都失败时，使用此分组ID指定的上游
+	// 如果为空，则使用全局默认上游
+	DefaultUpstreamGroupID string
+	
 	// SubdomainsOnly 是否仅匹配子域名（不包括域名本身）
 	SubdomainsOnly bool
+	
 	// Enabled 是否启用该规则组（默认true）
 	Enabled bool
 	
 	// domains 缓存的域名列表（内部使用，运行时加载）
 	domains []string
+	
+	// domainCount 有效域名数量（内部使用）
+	domainCount int
+	
+	// lastUpdate 最后更新时间（内部使用）
+	lastUpdate string
 }
 
 // LoadUpstreamConfigFromFiles 从文件加载域名分组配置

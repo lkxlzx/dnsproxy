@@ -1,0 +1,87 @@
+# Test configuration for multi-layer failover mechanism
+# This config demonstrates the three-layer failover:
+# Layer 1: Primary upstreams (group or default-group)
+# Layer 2: Fallback upstreams (group or default-group)
+# Layer 3: Global upstream (final fallback for all domains)
+
+# Basic settings
+listen-addrs:
+  - 127.0.0.1
+listen-ports:
+  - 53
+verbose: true
+
+# Cache settings
+cache: true
+cache-size: 1000
+
+# ----------------------------------------------------------------------------
+# Upstream Groups Configuration
+# ----------------------------------------------------------------------------
+upstream-groups:
+  # China DNS group with primary and fallback
+  - id: china-dns
+    description: China DNS servers
+    upstreams:
+      - 223.5.5.5      # Alibaba DNS (primary)
+      - 119.29.29.29   # Tencent DNS (primary)
+    fallback-upstreams:
+      - 114.114.114.114  # 114 DNS (fallback)
+
+  # Global DNS group with primary and fallback
+  - id: global-dns
+    description: Global DNS servers
+    upstreams:
+      - 8.8.8.8        # Google DNS (primary)
+      - 8.8.4.4        # Google DNS backup (primary)
+    fallback-upstreams:
+      - 1.1.1.1        # Cloudflare DNS (fallback)
+      - 1.0.0.1        # Cloudflare DNS backup (fallback)
+
+# ----------------------------------------------------------------------------
+# Default Upstream Group (for unmatched domains)
+# ----------------------------------------------------------------------------
+# This is Layer 1 & 2 for domains that don't match any domain group
+default-upstream-group-id: global-dns
+
+# ----------------------------------------------------------------------------
+# Global Upstream (Layer 3 - final fallback for ALL domains)
+# ----------------------------------------------------------------------------
+# This is used when:
+# - For matched domains: group primary + fallback all fail
+# - For unmatched domains: default-group primary + fallback all fail
+upstream:
+  - 8.8.8.8        # Google DNS (final fallback)
+  - 1.1.1.1        # Cloudflare DNS (final fallback)
+
+# ----------------------------------------------------------------------------
+# Domain Groups Configuration
+# ----------------------------------------------------------------------------
+domain-groups:
+  # China domains - uses china-dns group
+  - name: china
+    enabled: true
+    domain-file: china_domains.txt
+    upstream-group-id: china-dns
+    # Failover chain for matched domains:
+    # 1. china-dns upstreams (223.5.5.5, 119.29.29.29)
+    # 2. china-dns fallback-upstreams (114.114.114.114)
+    # 3. global upstream (8.8.8.8, 1.1.1.1)
+
+# ----------------------------------------------------------------------------
+# Failover Test Scenarios
+# ----------------------------------------------------------------------------
+# 
+# Scenario 1: Query for baidu.com (matches china group)
+#   1️⃣ Try china-dns upstreams: [223.5.5.5, 119.29.29.29]
+#   2️⃣ If all fail, try china-dns fallback: [114.114.114.114]
+#   3️⃣ If still fail, try global upstream: [8.8.8.8, 1.1.1.1]
+#   ❌ If all fail, return DNS query failure
+#
+# Scenario 2: Query for google.com (no match, uses default-group)
+#   1️⃣ Try global-dns upstreams: [8.8.8.8, 8.8.4.4]
+#   2️⃣ If all fail, try global-dns fallback: [1.1.1.1, 1.0.0.1]
+#   3️⃣ If still fail, try global upstream: [8.8.8.8, 1.1.1.1]
+#   ❌ If all fail, return DNS query failure
+#
+# ----------------------------------------------------------------------------

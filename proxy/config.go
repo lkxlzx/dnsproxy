@@ -80,6 +80,15 @@ type Config struct {
 	// real-time enable/disable of rules.
 	DomainGroups []DomainGroupConfig
 
+	// UpstreamGroups is the list of named upstream groups that can be
+	// referenced by domain groups using UpstreamGroupID.
+	UpstreamGroups []UpstreamGroup
+
+	// DefaultUpstreamGroupID is the ID of the upstream group to use as the final fallback
+	// when all other upstreams (including domain group fallbacks) fail.
+	// If empty, uses the UpstreamConfig as the default.
+	DefaultUpstreamGroupID string
+
 	// Fallbacks is a list of fallback resolvers.  Those will be used if the
 	// general set fails responding.  It isn't allowed to be empty, but can be
 	// nil, which means not to use fallbacks.

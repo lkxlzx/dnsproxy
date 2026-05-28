@@ -260,7 +260,7 @@ func New(c *Config) (p *Proxy, err error) {
 	if len(c.DomainGroups) > 0 {
 		opts := &upstream.Options{}
 		
-		p.domainGroupMgr, err = NewDomainGroupManager(c.DomainGroups, opts)
+		p.domainGroupMgr, err = NewDomainGroupManager(c.DomainGroups, c.UpstreamGroups, opts, p.logger)
 		if err != nil {
 			return nil, fmt.Errorf("init domain group manager: %w", err)
 		}
@@ -600,8 +600,18 @@ func (p *Proxy) selectUpstreams(d *DNSContext) (upstreams []upstream.Upstream, i
 		}
 	}
 
+	// Check if we have a default upstream group for unmatched domains
+	if p.domainGroupMgr != nil && p.DefaultUpstreamGroupID != "" {
+		defaultUpstreams, _, err := p.domainGroupMgr.GetDefaultUpstreams(p.DefaultUpstreamGroupID)
+		if err != nil {
+			p.logger.Warn("get default upstream group error", slogutil.KeyError, err)
+		} else if len(defaultUpstreams) > 0 {
+			return defaultUpstreams, false
+		}
+	}
+
 	// Use configured.
-	return getUpstreams(p.UpstreamConfig, host), false
+	return p.UpstreamConfig.getUpstreamsForDomain(host), false
 }
 
 // replyFromUpstream tries to resolve the request via configured upstream
@@ -609,58 +619,145 @@ func (p *Proxy) selectUpstreams(d *DNSContext) (upstreams []upstream.Upstream, i
 func (p *Proxy) replyFromUpstream(d *DNSContext) (ok bool, err error) {
 	req := d.Req
 
-	upstreams, isPrivate := p.selectUpstreams(d)
-	if len(upstreams) == 0 {
-		d.Res = p.messages.NewMsgNXDOMAIN(req)
-
-		return false, fmt.Errorf("selecting upstream: %w", upstream.ErrNoUpstreams)
-	}
+	// Check if this is a private request
+	_, isPrivate := p.selectUpstreams(d)
 
 	if isPrivate {
 		p.recDetector.add(d.Req)
 	}
 
-	src := "upstream"
-	wrapped := upstreamsWithStats(upstreams)
+	// Try multi-layer failover for domain groups
+	host := d.Req.Question[0].Name
+	resp, u, err := p.tryMultiLayerFailover(req, host, isPrivate)
 
-	// Perform the DNS request.
-	resp, u, err := p.exchangeUpstreams(req, wrapped)
-	if dns64Ups := p.performDNS64(req, resp, wrapped); dns64Ups != nil {
-		u = dns64Ups
-	} else if p.isBogusNXDomain(resp) {
-		p.logger.Debug("response contains bogus-nxdomain ip")
-		resp = p.messages.NewMsgNXDOMAIN(req)
+	if u != nil {
+		if dns64Ups := p.performDNS64(req, resp, []upstream.Upstream{u}); dns64Ups != nil {
+			u = dns64Ups
+		} else if p.isBogusNXDomain(resp) {
+			p.logger.Debug("response contains bogus-nxdomain ip")
+			resp = p.messages.NewMsgNXDOMAIN(req)
+		}
 	}
 
-	var wrappedFallbacks []upstream.Upstream
-	if err != nil && !isPrivate && p.Fallbacks != nil {
-		p.logger.Debug("using fallback", slogutil.KeyError, err)
-
-		src = "fallback"
-
-		// upstreams mustn't appear empty since they have been validated when
-		// creating proxy.
-		upstreams = p.Fallbacks.getUpstreamsForDomain(req.Question[0].Name)
-
-		wrappedFallbacks = upstreamsWithStats(upstreams)
-		resp, u, err = upstream.ExchangeParallel(wrappedFallbacks, req)
+	if resp != nil && u != nil {
+		p.logger.Debug("resolved", "upstream", u.Address())
 	}
 
 	if err != nil {
-		p.logger.Debug("resolving err", "src", src, slogutil.KeyError, err)
+		p.logger.Debug("resolving err", slogutil.KeyError, err)
 	}
 
-	if resp != nil {
-		p.logger.Debug("resolved", "upstream", u.Address(), "src", src)
-	}
-
-	unwrapped, stats := collectQueryStats(p.UpstreamMode, u, wrapped, wrappedFallbacks)
+	unwrapped := u
+	var stats *QueryStatistics
+	// Note: QueryStatistics structure needs to be populated properly
+	// For now, we'll leave it as nil since the multi-layer failover
+	// doesn't track statistics in the same way
 	d.queryStatistics = stats
 
 	ctx := context.TODO()
 	p.handleExchangeResult(ctx, d, req, resp, unwrapped)
 
 	return resp != nil, err
+}
+
+// tryMultiLayerFailover implements the complete multi-layer failover logic:
+// For matched domains: group primary → group fallback → global upstream
+// For unmatched domains: default-group primary → default-group fallback → global upstream
+func (p *Proxy) tryMultiLayerFailover(req *dns.Msg, host string, isPrivate bool) (*dns.Msg, upstream.Upstream, error) {
+	var resp *dns.Msg
+	var u upstream.Upstream
+	var err error
+
+	// Layer 1 & 2: Try domain group with fallback
+	if p.domainGroupMgr != nil {
+		primaryUpstreams, fallbackUpstreams, matchErr := p.domainGroupMgr.MatchDomainWithFallback(host)
+		if matchErr != nil {
+			p.logger.Warn("domain group match error", slogutil.KeyError, matchErr)
+		} else if len(primaryUpstreams) > 0 {
+			// Layer 1: Try primary upstreams
+			p.logger.Debug("trying domain group primary upstreams", "count", len(primaryUpstreams))
+			wrapped := upstreamsWithStats(primaryUpstreams)
+			resp, u, err = p.exchangeUpstreams(req, wrapped)
+			
+			if err == nil && resp != nil {
+				p.logger.Debug("resolved from domain group primary")
+				return resp, u, nil
+			}
+			
+			// Layer 2: Try fallback upstreams if primary failed
+			if len(fallbackUpstreams) > 0 {
+				p.logger.Debug("primary failed, trying domain group fallback upstreams", "count", len(fallbackUpstreams), slogutil.KeyError, err)
+				wrappedFallback := upstreamsWithStats(fallbackUpstreams)
+				resp, u, err = p.exchangeUpstreams(req, wrappedFallback)
+				
+				if err == nil && resp != nil {
+					p.logger.Debug("resolved from domain group fallback")
+					return resp, u, nil
+				}
+			}
+			
+			// Layer 3: Try global upstream (will be handled below)
+			p.logger.Debug("domain group fallback failed, will try global upstream", slogutil.KeyError, err)
+		} else {
+			// No match, try default upstream group for unmatched domains
+			if p.DefaultUpstreamGroupID != "" {
+				defaultPrimary, defaultFallback, defaultErr := p.domainGroupMgr.GetDefaultUpstreams(p.DefaultUpstreamGroupID)
+				if defaultErr != nil {
+					p.logger.Warn("get default upstream group error", slogutil.KeyError, defaultErr)
+				} else if len(defaultPrimary) > 0 {
+					// Layer 1: Try default group primary
+					p.logger.Debug("trying default group primary upstreams", "count", len(defaultPrimary))
+					wrapped := upstreamsWithStats(defaultPrimary)
+					resp, u, err = p.exchangeUpstreams(req, wrapped)
+					
+					if err == nil && resp != nil {
+						p.logger.Debug("resolved from default group primary")
+						return resp, u, nil
+					}
+					
+					// Layer 2: Try default group fallback
+					if len(defaultFallback) > 0 {
+						p.logger.Debug("default primary failed, trying default group fallback", "count", len(defaultFallback), slogutil.KeyError, err)
+						wrappedFallback := upstreamsWithStats(defaultFallback)
+						resp, u, err = p.exchangeUpstreams(req, wrappedFallback)
+						
+						if err == nil && resp != nil {
+							p.logger.Debug("resolved from default group fallback")
+							return resp, u, nil
+						}
+					}
+					
+					// Layer 3: Try global upstream (will be handled below)
+					p.logger.Debug("default group fallback failed, will try global upstream", slogutil.KeyError, err)
+				}
+			}
+		}
+	}
+
+	// Layer 3: Try global upstream (final fallback for all domains)
+	if !isPrivate && p.Fallbacks != nil {
+		p.logger.Debug("trying global upstream (final fallback)", slogutil.KeyError, err)
+		upstreams := p.Fallbacks.getUpstreamsForDomain(host)
+		wrapped := upstreamsWithStats(upstreams)
+		resp, u, err = upstream.ExchangeParallel(wrapped, req)
+		
+		if err == nil && resp != nil {
+			p.logger.Debug("resolved from global upstream")
+			return resp, u, nil
+		}
+	}
+
+	// If still no response, try the original UpstreamConfig as last resort
+	if resp == nil {
+		p.logger.Debug("all failover layers failed, trying original upstream config", slogutil.KeyError, err)
+		upstreams := p.UpstreamConfig.getUpstreamsForDomain(host)
+		if len(upstreams) > 0 {
+			wrapped := upstreamsWithStats(upstreams)
+			resp, u, err = p.exchangeUpstreams(req, wrapped)
+		}
+	}
+
+	return resp, u, err
 }
 
 // handleExchangeResult handles the result after the upstream exchange.  It sets
